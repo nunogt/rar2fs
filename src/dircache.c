@@ -60,8 +60,12 @@ static void *__alloc()
 {
         struct dircache_entry *e;
         e = malloc(sizeof(struct dircache_entry));
-        if (e)
-                dir_list_open(&e->dir_entry_list);
+        /* Finding 18: Add error logging for malloc failure */
+        if (!e) {
+                printd(1, "dircache __alloc: malloc failed\n");
+                return NULL;
+        }
+        dir_list_open(&e->dir_entry_list);
         return e;
 }
 

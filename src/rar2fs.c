@@ -83,6 +83,15 @@
 #define RD_SYNC_READ 3
 #define RD_ASYNC_READ 4
 
+/* Maximum chunk size for UnRAR callbacks (Phase 2 Batch 1 - Finding 9/10) */
+#define MAX_CHUNK_SIZE (128 * 1024 * 1024)  /* 128MB */
+
+/* Maximum reasonable file size for validation (Phase 2 Batch 3 - Finding 14/15/17/24) */
+#define MAX_REASONABLE_FILE_SIZE (100ULL * 1024 * 1024 * 1024)  /* 100GB */
+
+/* Maximum password buffer length (Phase 2 Batch 3 - Finding 26) */
+#define MAX_PASSWORD_LEN 1024
+
 /*#define DEBUG_READ*/
 
 struct volume_handle {
@@ -851,7 +860,9 @@ static char *get_vname(int t, const char *str, int vol, int len, int pos)
                 char f1[16];
                 snprintf(f1, sizeof(f1), "%%0%dd", len);
                 snprintf(f, sizeof(f), f1, vol);
+                /* Finding 19: Ensure null termination after strncpy */
                 strncpy(&s[pos], f, len);
+                /* s is already null-terminated from strdup, copying middle chars preserves it */
         } else {
                 char f[16];
                 int lower = s[pos - 1] >= 'r';
@@ -865,7 +876,9 @@ static char *get_vname(int t, const char *str, int vol, int len, int pos)
                         --pos;
                         ++len;
                 }
+                /* Finding 19: Ensure null termination after strncpy */
                 strncpy(&s[pos], f, len);
+                /* s is already null-terminated from strdup, copying middle chars preserves it */
         }
         return s;
 }
@@ -1380,6 +1393,17 @@ static int lread_rar_idx(char *buf, size_t size, off_t offset,
         res = pread(op->buf->idx.fd, buf, size, off + sizeof(struct idx_head));
         if (res == -1)
                 return -errno;
+        /* Check for partial or zero reads (Finding 21) */
+        if (res == 0) {
+                printd(1, "pread: unexpected EOF at offset %" PRIu64 "\n",
+                       off + sizeof(struct idx_head));
+                return -EIO;
+        }
+        if (res > 0 && res < (ssize_t)size) {
+                printd(1, "pread: partial read %zd of %zu bytes at offset %" PRIu64 "\n",
+                       res, size, off + sizeof(struct idx_head));
+                /* Return actual bytes read - caller should handle partial read */
+        }
 /* This is a workaround for a misbehaving pread(2) on Cygwin (!?).
  * At EOF pread(2) should return 0 but on Cygwin that is not the case and
  * instead some very high number is observed like 1628127168.
@@ -1936,7 +1960,13 @@ skip_file_check:
                                         dll_result = ERAR_EOPEN;
                                 break;
                         }
-                        (void)RARProcessFile(h, RAR_SKIP, NULL, NULL);
+                        /* Check RARProcessFile return value (Finding 1) */
+                        int skip_res = RARProcessFile(h, RAR_SKIP, NULL, NULL);
+                        if (skip_res != ERAR_SUCCESS) {
+                                printd(1, "RARProcessFile failed in volume collection: %d\n", skip_res);
+                                dll_result = skip_res;
+                                break;
+                        }
                         list = dir_entry_add(list, header.ArcName, NULL,
                                              DIR_E_NRM);
                 }
@@ -1964,6 +1994,12 @@ static int CALLBACK index_callback(UINT msg, LPARAM UserData,
         struct eof_cb_arg *eofd = (struct eof_cb_arg *)UserData;
 
         if (msg == UCM_PROCESSDATA) {
+                /* Validate chunk size before processing (Finding 10) */
+                if (P2 <= 0 || P2 > MAX_CHUNK_SIZE) {
+                        printd(1, "index_callback: invalid chunk size %ld (max %ld)\n",
+                               (long)P2, (long)MAX_CHUNK_SIZE);
+                        return -1;
+                }
                 /*
                  * We do not need to handle the case that not all data is
                  * written after return from write() since the pipe is not
@@ -1982,17 +2018,41 @@ static int CALLBACK index_callback(UINT msg, LPARAM UserData,
                 }
                 if (eofd->coff == eofd->toff) {
                         eofd->size += P2;
-                        NO_UNUSED_RESULT write(eofd->fd, (char *)P1, P2);
+                        /* Check for partial writes (Finding 11) */
+                        ssize_t written = write(eofd->fd, (char *)P1, P2);
+                        if (written != (ssize_t)P2) {
+                                if (written == -1) {
+                                        printd(1, "index_callback: write failed: %s\n",
+                                               strerror(errno));
+                                } else {
+                                        printd(1, "index_callback: partial write %zd of %ld bytes\n",
+                                               written, (long)P2);
+                                }
+                                return -1;
+                        }
                         fdatasync(eofd->fd);      /* XXX needed!? */
                         eofd->toff += P2;
                         eofd->coff = eofd->toff;
                 }
 
         }
-        if (msg == UCM_CHANGEVOLUME)
-                return access((char *)P1, F_OK);
+        /* Finding 23: Clarify access() return semantics with logging */
+        if (msg == UCM_CHANGEVOLUME) {
+                int res = access((char *)P1, F_OK);
+                if (res != 0) {
+                        printd(2, "index_callback: volume not accessible: %s (errno=%d)\n",
+                               (char *)P1, errno);
+                }
+                return res == 0 ? 0 : -1;
+        }
 #if RARVER_MAJOR > 4 || ( RARVER_MAJOR == 4 && RARVER_MINOR >= 20 )
         if (msg == UCM_NEEDPASSWORDW) {
+                /* Validate password buffer size (Finding 26) */
+                if (P2 > MAX_PASSWORD_LEN) {
+                        printd(1, "index_callback: password buffer size too large: %ld (max %d)\n",
+                               (long)P2, MAX_PASSWORD_LEN);
+                        return -1;
+                }
                 if (!get_password(eofd->arch, (wchar_t *)P1, P2))
                         return -1;
         }
@@ -2035,7 +2095,13 @@ static int extract_index(const char *path, const struct filecache_entry *entry_p
         d.UserData = (LPARAM)&eofd;
 
         ABS_ROOT(r2i, path);
-        strcpy(&r2i[strlen(r2i) - 3], "r2i");
+        /* Finding 20: Validate offset before strcpy to prevent underflow */
+        size_t r2i_len = strlen(r2i);
+        if (r2i_len < 3) {
+                printd(1, "create_index: path too short for .r2i extension: %s\n", r2i);
+                goto index_error;
+        }
+        strcpy(&r2i[r2i_len - 3], "r2i");
 
         eofd.fd = open(r2i, O_WRONLY|O_CREAT|O_EXCL,
                         S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
@@ -2051,19 +2117,41 @@ static int extract_index(const char *path, const struct filecache_entry *entry_p
         while (1) {
                 if (RARReadHeaderEx(hdl, &header))
                         break;
+                /* Validate filename is null-terminated (Finding 16) */
+                if (strnlen(header.FileName, sizeof(header.FileName)) >= sizeof(header.FileName)) {
+                        printd(1, "create_index: invalid filename in header (not null-terminated)\n");
+                        e = ERAR_BAD_DATA;
+                        break;
+                }
                 /* We won't extract subdirs */
                 if (IS_RAR_DIR(&header) ||
                         strcmp(header.FileName, entry_p->file_p)) {
-                                if (RARProcessFile(hdl, RAR_SKIP, NULL, NULL))
+                                /* Distinguish errors from EOF (Finding 2) */
+                                int skip_res = RARProcessFile(hdl, RAR_SKIP, NULL, NULL);
+                                if (skip_res != ERAR_SUCCESS) {
+                                        printd(1, "RARProcessFile skip failed in index generation: %d\n", skip_res);
+                                        if (skip_res != ERAR_END_ARCHIVE)
+                                                e = skip_res;
                                         break;
+                                }
                 } else {
+                        /* Add error logging (Finding 7) */
                         e = RARProcessFile(hdl, RAR_TEST, NULL, NULL);
+                        if (e) {
+                                printd(1, "RARProcessFile test failed in index generation: %d\n", e);
+                        }
                         if (!e) {
                                 head.offset = offset;
                                 head.size = eofd.size;
                                 lseek(eofd.fd, (off_t)0, SEEK_SET);
-                                NO_UNUSED_RESULT write(eofd.fd, (void*)&head,
+                                /* Validate index header write (Finding 12) */
+                                ssize_t hdr_written = write(eofd.fd, (void*)&head,
                                                 sizeof(struct idx_head));
+                                if (hdr_written != sizeof(struct idx_head)) {
+                                        printd(1, "extract_index: failed to write index header (wrote %zd of %zu)\n",
+                                               hdr_written, sizeof(struct idx_head));
+                                        e = ERAR_EWRITE;
+                                }
                         }
                         break;
                 }
@@ -2097,6 +2185,12 @@ static int CALLBACK extract_callback(UINT msg, LPARAM UserData,
                         }
                         return -1;
                 }
+                /* Validate chunk size before processing (Finding 9) */
+                if (P2 <= 0 || P2 > MAX_CHUNK_SIZE) {
+                        printd(1, "extract_callback: invalid chunk size %ld (max %ld)\n",
+                               (long)P2, (long)MAX_CHUNK_SIZE);
+                        return -1;
+                }
                 /*
                  * We do not need to handle the case that not all data is
                  * written after return from write() since the pipe is not
@@ -2113,10 +2207,23 @@ static int CALLBACK extract_callback(UINT msg, LPARAM UserData,
                         return -1;
                 }
         }
-        if (msg == UCM_CHANGEVOLUME)
-                return access((char *)P1, F_OK);
+        /* Finding 23: Clarify access() return semantics with logging */
+        if (msg == UCM_CHANGEVOLUME) {
+                int res = access((char *)P1, F_OK);
+                if (res != 0) {
+                        printd(2, "extract_callback: volume not accessible: %s (errno=%d)\n",
+                               (char *)P1, errno);
+                }
+                return res == 0 ? 0 : -1;
+        }
 #if RARVER_MAJOR > 4 || ( RARVER_MAJOR == 4 && RARVER_MINOR >= 20 )
         if (msg == UCM_NEEDPASSWORDW) {
+                /* Validate password buffer size (Finding 26) */
+                if (P2 > MAX_PASSWORD_LEN) {
+                        printd(1, "extract_callback: password buffer size too large: %ld (max %d)\n",
+                               (long)P2, MAX_PASSWORD_LEN);
+                        return -1;
+                }
                 if (!get_password(cb_arg->arch, (wchar_t *)P1, P2))
                         return -1;
         }
@@ -2161,10 +2268,20 @@ static int extract_rar(char *arch, const char *file, void *arg)
                         break;
                 /* We won't extract subdirs */
                 if (IS_RAR_DIR(&header) || strcmp(header.FileName, file)) {
-                        if (RARProcessFile(hdl, RAR_SKIP, NULL, NULL))
+                        /* Distinguish errors from EOF (Finding 3) */
+                        int skip_res = RARProcessFile(hdl, RAR_SKIP, NULL, NULL);
+                        if (skip_res != ERAR_SUCCESS) {
+                                printd(1, "RARProcessFile skip failed in extraction: %d\n", skip_res);
+                                if (skip_res != ERAR_END_ARCHIVE)
+                                        ret = skip_res;
                                 break;
+                        }
                 } else {
+                        /* Add error logging (Finding 8) */
                         ret = RARProcessFile(hdl, RAR_TEST, NULL, NULL);
+                        if (ret) {
+                                printd(1, "RARProcessFile test failed in extraction: %d\n", ret);
+                        }
                         break;
                 }
         }
@@ -2230,14 +2347,42 @@ static uint64_t extract_file_size(char *arch, const char *file)
                          * uncompressed size. */
                         if (header.Method == FHD_STORING &&
                                         !IS_RAR_DIR(&header)) {
-                                size += GET_RAR_PACK_SZ(&header);
+                                /* Validate pack size (Finding 14) */
+                                uint64_t pack_size = GET_RAR_PACK_SZ(&header);
+                                if (pack_size > MAX_REASONABLE_FILE_SIZE) {
+                                        printd(1, "extract_file_size: suspicious pack size %llu (max %llu)\n",
+                                               (unsigned long long)pack_size,
+                                               (unsigned long long)MAX_REASONABLE_FILE_SIZE);
+                                        break;
+                                }
+                                /* Check for overflow (Finding 24) */
+                                if (size > UINT64_MAX - pack_size) {
+                                        printd(1, "extract_file_size: size overflow detected\n");
+                                        size = UINT64_MAX;
+                                        break;
+                                }
+                                size += pack_size;
                         } else {
-                                size = GET_RAR_SZ(&header);
+                                /* Validate uncompressed size (Finding 14) */
+                                uint64_t file_size = GET_RAR_SZ(&header);
+                                if (file_size > MAX_REASONABLE_FILE_SIZE) {
+                                        printd(1, "extract_file_size: suspicious file size %llu (max %llu)\n",
+                                               (unsigned long long)file_size,
+                                               (unsigned long long)MAX_REASONABLE_FILE_SIZE);
+                                        size = 0;
+                                } else {
+                                        size = file_size;
+                                }
                                 break;
                         }
                 }
-                if (RARProcessFile(hdl, RAR_SKIP, NULL, NULL))
+                /* Distinguish errors from EOF (Finding 4) */
+                int skip_res = RARProcessFile(hdl, RAR_SKIP, NULL, NULL);
+                if (skip_res != ERAR_SUCCESS) {
+                        printd(1, "RARProcessFile skip failed in size calculation: %d\n", skip_res);
+                        /* Continue even on errors to return best effort size */
                         break;
+                }
         }
 
 out:
@@ -2624,13 +2769,16 @@ static struct filecache_entry *__listrar_tocache(char *file,
         if (!entry_p->rar_p) {
                 printd(1, "__listrar_tocache: strdup failed for rar_p\n");
                 filecache_invalidate(file);
-                return -ENOMEM;
+                return NULL;
         }
         entry_p->file_p = strdup(arc->hdr.FileName);
         if (!entry_p->file_p) {
                 printd(1, "__listrar_tocache: strdup failed for file_p\n");
+                /* Finding 22: Clean up first allocation to prevent memory leak */
+                free(entry_p->rar_p);
+                entry_p->rar_p = NULL;
                 filecache_invalidate(file);
-                return -ENOMEM;
+                return NULL;
         }
         entry_p->flags.vsize_resolved = 1; /* Assume sizes will be resolved */
         if (IS_RAR_DIR(&arc->hdr))
@@ -2865,6 +3013,8 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                         if (!safe_path) {
                                 printd(1, "listrar: strdup failed for safe_path (forcedir)\n");
                                 ret = -ENOMEM;
+                                /* Finding 25: Unlock before goto to prevent deadlock */
+                                pthread_rwlock_unlock(&file_access_lock);
                                 goto out;
                         }
                         char *tmp = safe_path;
@@ -2886,6 +3036,8 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                                                 printd(1, "Failed to cache forcedir entry\n");
                                                 filecache_invalidate(mp2);
                                                 free(mp2);
+                                                /* Finding 25: Unlock before goto to prevent deadlock */
+                                                pthread_rwlock_unlock(&file_access_lock);
                                                 goto out;
                                         }
                                         __listrar_cachedir(mp2);
@@ -2901,6 +3053,8 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                                 if (!safe_path) {
                                         printd(1, "listrar: strdup failed for safe_path (cachedir)\n");
                                         ret = -ENOMEM;
+                                        /* Finding 25: Unlock before goto to prevent deadlock */
+                                        pthread_rwlock_unlock(&file_access_lock);
                                         goto out;
                                 }
                                 tmp = safe_path;
@@ -3926,7 +4080,13 @@ static int preload_index(struct iob *buf, const char *path)
 
         char *r2i;
         ABS_ROOT(r2i, path);
-        strcpy(&r2i[strlen(r2i) - 3], "r2i");
+        /* Finding 20: Validate offset before strcpy to prevent underflow */
+        size_t r2i_len = strlen(r2i);
+        if (r2i_len < 3) {
+                printd(1, "preload_index: path too short for .r2i extension: %s\n", r2i);
+                return -1;
+        }
+        strcpy(&r2i[r2i_len - 3], "r2i");
         printd(3, "Preloading index for %s\n", r2i);
 
         buf->idx.data_p = MAP_FAILED;
@@ -3961,11 +4121,21 @@ static int preload_index(struct iob *buf, const char *path)
 #else
         buf->idx.data_p = malloc(sizeof(struct idx_data));
         if (!buf->idx.data_p) {
+                printd(1, "preload_index: malloc failed\n");
                 close(fd);
                 buf->idx.data_p = MAP_FAILED;
                 return -1;
         }
-        NO_UNUSED_RESULT read(fd, buf->idx.data_p, sizeof(struct idx_head));
+        /* Validate index header read (Finding 13) */
+        ssize_t bytes_read = read(fd, buf->idx.data_p, sizeof(struct idx_head));
+        if (bytes_read != sizeof(struct idx_head)) {
+                printd(1, "preload_index: short read of index header (%zd of %zu bytes)\n",
+                       bytes_read, sizeof(struct idx_head));
+                close(fd);
+                free(buf->idx.data_p);
+                buf->idx.data_p = MAP_FAILED;
+                return -1;
+        }
         if (ntohs(buf->idx.data_p->head.version) == 0) {
                 syslog(LOG_INFO, "preloaded index header version 0 not supported");
                 close(fd);

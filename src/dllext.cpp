@@ -234,8 +234,12 @@ int PASCAL RARListArchiveEx(HANDLE hArcData, RARArchiveDataEx **NN)
     return ERAR_NO_MEMORY;
   }
 #endif
-  // Skip to next header
-  return RARProcessFile(hArcData,RAR_SKIP,NULL,NULL);
+  // Skip to next header and log errors (Finding 5)
+  int skip_res = RARProcessFile(hArcData,RAR_SKIP,NULL,NULL);
+  if (skip_res != ERAR_SUCCESS && skip_res != ERAR_END_ARCHIVE) {
+    cerr << "RARProcessFile skip failed in RARReadHeader: " << skip_res << endl;
+  }
+  return skip_res;
 }
 
 void PASCAL RARFreeArchiveDataEx(RARArchiveDataEx **NN)
@@ -333,7 +337,12 @@ void PASCAL RARGetFileInfo(HANDLE hArcData, const char *FileName, struct RARWcb 
       wcb->bytes = ListFileHeader(wcb->data, Arc);
       return;
     }
-    (void)RARProcessFile(hArcData,RAR_SKIP,NULL,NULL);
+    // Check RARProcessFile return value (Finding 6)
+    int skip_res = RARProcessFile(hArcData,RAR_SKIP,NULL,NULL);
+    if (skip_res != ERAR_SUCCESS && skip_res != ERAR_END_ARCHIVE) {
+      cerr << "RARProcessFile skip failed in RARGetFileInfo: " << skip_res << endl;
+      wcb->bytes = 0;
+    }
   }
 #else
   (void)hArcData;
