@@ -36,6 +36,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "debug.h"
 #include "hashtable.h"
 #include "dirlist.h"
 #include "dircache.h"
@@ -116,6 +117,10 @@ void dircache_invalidate(const char *path)
 
         if (path) {
                 char *safe_path = strdup(path);
+                if (!safe_path) {
+                        printd(1, "dircache_invalidate: strdup failed\n");
+                        return;
+                }
                 char *tmp = safe_path;
                 safe_path = __gnu_dirname(safe_path);
                 hash = get_hash(safe_path, 0);
@@ -139,6 +144,10 @@ struct dircache_entry *dircache_alloc(const char *path)
         uint32_t hash;
 
         char *safe_path = strdup(path);
+        if (!safe_path) {
+                printd(1, "dircache_alloc: strdup failed\n");
+                return NULL;
+        }
         char *tmp = safe_path;
         safe_path = __gnu_dirname(safe_path);
         hash = get_hash(safe_path, 0);
@@ -176,6 +185,10 @@ struct dircache_entry *dircache_get(const char *path)
         int ret;
 
         char *safe_path = strdup(path);
+        if (!safe_path) {
+                printd(1, "dircache_get: strdup failed\n");
+                return NULL;
+        }
         char *tmp = safe_path;
         safe_path = __gnu_dirname(safe_path);
         hash = get_hash(safe_path, 0);

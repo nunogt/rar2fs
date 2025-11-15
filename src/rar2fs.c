@@ -276,6 +276,10 @@ static const char *get_alias(const char *rar, const char *file)
                 if (alias)
                         return alias + 1;
                 rar_safe = strdup(rar);
+                if (!rar_safe) {
+                        printd(1, "check_alias: strdup failed\n");
+                        return file;
+                }
                 alias = rarconfig_getalias(basename(rar_safe), file_abs);
                 free(rar_safe);
                 if (alias)
@@ -314,6 +318,10 @@ static int get_seek_length(char *rar)
 static void __dircache_invalidate_for_file(const char *path)
 {
         char *safe_path = strdup(path);
+        if (!safe_path) {
+                printd(1, "__dircache_invalidate_for_file: strdup failed\n");
+                return;
+        }
         pthread_rwlock_wrlock(&dir_access_lock);
         dircache_invalidate(__gnu_dirname(safe_path));
         pthread_rwlock_unlock(&dir_access_lock);
@@ -478,6 +486,10 @@ static char *get_password(const char *file, char *buf, size_t len)
                 return NULL;
 
         rar = strdup(file);
+        if (!rar) {
+                printd(1, "get_password: strdup failed\n");
+                return NULL;
+        }
         tmp = rar;
         s = OPT_STR(OPT_KEY_SRC, 0);
 
@@ -507,7 +519,14 @@ static char *get_password(const char *file, char *buf, size_t len)
         while (lx && file[lx] != '.') --lx;
         if (lx) {
                 l[0] = lx;
-                f[0] = strdup(file);
+                /* Allocate space for original path + ".pwd" (worst case: extension replacement) */
+                size_t needed = strlen(file) + 5; /* +5 for ".pwd" + null if ext is shorter */
+                f[0] = malloc(needed);
+                if (!f[0]) {
+                        printd(1, "get_password: malloc failed for f[0]\n");
+                        return NULL;
+                }
+                snprintf(f[0], needed, "%s", file);
         }
         /* In case this is an old-style volume, or even not a volume at
          * all, simply placing the index behind .rar or .rNN should be
@@ -515,19 +534,46 @@ static char *get_password(const char *file, char *buf, size_t len)
         lx = strlen(file);
         if (lx > 4) {
                 l[1] = lx - 4;
-                f[1] = strdup(file);
+                /* Allocate space for original path + ".pwd" (worst case: extension replacement) */
+                size_t needed = strlen(file) + 5; /* +5 for ".pwd" + null if ext is shorter */
+                f[1] = malloc(needed);
+                if (!f[1]) {
+                        printd(1, "get_password: malloc failed for f[1]\n");
+                        free(f[0]);
+                        return NULL;
+                }
+                snprintf(f[1], needed, "%s", file);
         }
         for (i = 0; i < 2; i++) {
                 if (f[i]) {
                         char *F = f[i];
-                        strcpy(F + l[i], ".pwd");
+                        /* Safe: f[i] was allocated with extra space for ".pwd" */
+                        snprintf(F + l[i], 5, ".pwd");
                         FILE *fp = fopen(F, "r");
                         if (!fp) {
                                 char *tmp1 = strdup(F);
+                                if (!tmp1) {
+                                        printd(1, "get_password: strdup failed for tmp1\n");
+                                        continue;
+                                }
                                 char *tmp2 = strdup(F);
-                                F = malloc(strlen(file) + 8);
-                                sprintf(F, "%s%s%s", __gnu_dirname(tmp1),
-                                                "/.", basename(tmp2));
+                                if (!tmp2) {
+                                        printd(1, "get_password: strdup failed for tmp2\n");
+                                        free(tmp1);
+                                        continue;
+                                }
+                                /* Calculate required size: dirname + "/." + basename + null */
+                                char *dir = __gnu_dirname(tmp1);
+                                char *base = basename(tmp2);
+                                size_t needed = strlen(dir) + 2 + strlen(base) + 1;
+                                F = malloc(needed);
+                                if (!F) {
+                                        printd(1, "get_password: malloc failed for F\n");
+                                        free(tmp1);
+                                        free(tmp2);
+                                        continue;
+                                }
+                                snprintf(F, needed, "%s/.%s", dir, base);
                                 free(tmp1);
                                 free(tmp2);
                                 fp = fopen(F, "r");
@@ -796,21 +842,25 @@ static char *get_vname(int t, const char *str, int vol, int len, int pos)
         ENTER_("%s   vol=%d, len=%d, pos=%d", str, vol, len, pos);
 
         char *s = strdup(str);
+        if (!s) {
+                printd(1, "get_vname: strdup failed\n");
+                return NULL;
+        }
         if (t) {
                 char f[16];
                 char f1[16];
-                sprintf(f1, "%%0%dd", len);
-                sprintf(f, f1, vol);
+                snprintf(f1, sizeof(f1), "%%0%dd", len);
+                snprintf(f, sizeof(f), f1, vol);
                 strncpy(&s[pos], f, len);
         } else {
                 char f[16];
                 int lower = s[pos - 1] >= 'r';
                 if (vol == 0) {
-                        sprintf(f, "%s", (lower ? "ar" : "AR"));
+                        snprintf(f, sizeof(f), "%s", (lower ? "ar" : "AR"));
                 } else if (vol <= 100) {
-                        sprintf(f, "%02d", (vol - 1));
+                        snprintf(f, sizeof(f), "%02d", (vol - 1));
                 } else { /* Possible, but unlikely */
-                        sprintf(f, "%c%02d", (lower ? 'r' : 'R') + (vol - 1) / 100,
+                        snprintf(f, sizeof(f), "%c%02d", (lower ? 'r' : 'R') + (vol - 1) / 100,
                                                 (vol - 1) % 100);
                         --pos;
                         ++len;
@@ -912,6 +962,10 @@ static int __RARVolNameToFirstName(char *arch, int vtype)
         int pos;
         int vol;
         char *s_orig = strdup(arch);
+        if (!s_orig) {
+                printd(1, "check_files_quick: strdup failed\n");
+                return -1;
+        }
         int ret = 0;
 
         vol = get_vformat(arch, !vtype, &len, &pos);
@@ -1022,6 +1076,10 @@ static void update_atime(const char* path, struct filecache_entry *entry_p,
         entry_p->stat.st_atim.tv_nsec = tp[0].tv_nsec;
 #endif
         char* tmp1 = strdup(path);
+        if (!tmp1) {
+                printd(1, "update_atime: strdup failed for path\n");
+                return;
+        }
         e_p = filecache_get(__gnu_dirname(tmp1));
         free(tmp1);
         if (e_p && S_ISDIR(e_p->stat.st_mode)) {
@@ -1036,7 +1094,16 @@ static void update_atime(const char* path, struct filecache_entry *entry_p,
 #if defined( HAVE_UTIMENSAT ) && defined( AT_SYMLINK_NOFOLLOW )
                 tp[1].tv_nsec = UTIME_OMIT;
                 tmp1 = strdup(entry_p->rar_p);
+                if (!tmp1) {
+                        printd(1, "update_atime: strdup failed for rar_p\n");
+                        return;
+                }
                 char *tmp2 = strdup(tmp1);
+                if (!tmp2) {
+                        printd(1, "update_atime: strdup failed for tmp1\n");
+                        free(tmp1);
+                        return;
+                }
                 int res = utimensat(0, __gnu_dirname(tmp2), tp,
                                     AT_SYMLINK_NOFOLLOW);
                 if (!res && OPT_SET(OPT_KEY_ATIME_RAR)) {
@@ -1346,11 +1413,13 @@ static void dump_buf(int seq, FILE *fp, char *buf, off_t offset, size_t size)
                         seq, offset, size_saved, buf);
                 for (i = 0; i < size; i++) {
                         if (!i || !(i % 10)) {
-                                sprintf(tmp, "\n%016llx : ", offset + i);
-                                tmp += 20;
+                                int written = snprintf(tmp, out + sizeof(out) - tmp,
+                                                      "\n%016llx : ", offset + i);
+                                tmp += (written > 0) ? written : 0;
                         }
-                        sprintf(tmp, "%02x ", (uint32_t)*(buf+i) & 0xff);
-                        tmp += 3;
+                        int written = snprintf(tmp, out + sizeof(out) - tmp,
+                                              "%02x ", (uint32_t)*(buf+i) & 0xff);
+                        tmp += (written > 0) ? written : 0;
                         if (i && !(i % 10)) {
                                 fprintf(fp, "%s", out);
                                 tmp = out;
@@ -1367,11 +1436,13 @@ static void dump_buf(int seq, FILE *fp, char *buf, off_t offset, size_t size)
                         fprintf(fp, "\nlast 64 bytes:");
                         for (i = 0; i < 64; i++) {
                                 if (!i || !(i % 10)) {
-                                        sprintf(tmp, "\n%016llx : ", offset + i);
-                                        tmp += 20;
+                                        int written = snprintf(tmp, out + sizeof(out) - tmp,
+                                                              "\n%016llx : ", offset + i);
+                                        tmp += (written > 0) ? written : 0;
                                 }
-                                sprintf(tmp, "%02x ", (uint32_t)*(buf+i) & 0xff);
-                                tmp += 3;
+                                int written = snprintf(tmp, out + sizeof(out) - tmp,
+                                                      "%02x ", (uint32_t)*(buf+i) & 0xff);
+                                tmp += (written > 0) ? written : 0;
                                 if (i && !(i % 10)) {
                                         fprintf(fp, "%s", out);
                                         tmp = out;
@@ -2206,13 +2277,20 @@ static void set_rarstats(struct filecache_entry *entry_p, RARArchiveDataEx *arc,
                                                 sizeof(arc->LinkTarget));
                                         if ((int)len != -1) {
                                                 entry_p->link_target_p = strdup(tmp);
-                                                st_size = len;
+                                                if (!entry_p->link_target_p) {
+                                                        printd(1, "__listrar_tocache: strdup failed for link_target_p (unicode)\n");
+                                                } else {
+                                                        st_size = len;
+                                                }
                                         }
                                         free(tmp);
                                 }
                         } else {
                                 entry_p->link_target_p =
                                         strdup(arc->LinkTarget);
+                                if (!entry_p->link_target_p) {
+                                        printd(1, "__listrar_tocache: strdup failed for link_target_p\n");
+                                }
                         }
                 }
                 if (OPT_SET(OPT_KEY_NO_INHERIT_PERM)) {
@@ -2361,6 +2439,11 @@ static struct filecache_entry *lookup_filecopy(const char *path,
                                 ABS_MP(mp2, (*rar_root ? rar_root : "/"), tmp);
                         } else {
                                 char *rar_dir = strdup(tmp);
+                                if (!rar_dir) {
+                                        printd(1, "lookup_filecopy: strdup failed for rar_dir\n");
+                                        free(tmp);
+                                        return NULL;
+                                }
                                 ABS_MP(mp2, path, basename(rar_dir));
                                 free(rar_dir);
                         }
@@ -2443,6 +2526,10 @@ void __add_filler(const char *path, struct dir_entry_list **buffer,
 
         /* Cut input file path on current lookup level */
         char *file_dup = strdup(file);
+        if (!file_dup) {
+                printd(1, "__listrar_filldir: strdup failed for file_dup\n");
+                return;
+        }
         char *s = file_dup + path_len;
         s = strchr(s, '/');
         if (s)
@@ -2451,6 +2538,11 @@ void __add_filler(const char *path, struct dir_entry_list **buffer,
         struct filecache_entry *entry_p = filecache_get(file_dup);
         if (entry_p != NULL) {
                 char *safe_path = strdup(file_dup);
+                if (!safe_path) {
+                        printd(1, "__listrar_filldir: strdup failed for safe_path\n");
+                        free(file_dup);
+                        return;
+                }
                 *buffer = dir_entry_add(*buffer, basename(file_dup),
                                                 &entry_p->stat,
                                                 DIR_E_RAR);
@@ -2529,7 +2621,17 @@ static struct filecache_entry *__listrar_tocache(char *file,
         entry_p = filecache_alloc(file);
 
         entry_p->rar_p = strdup(first_arch);
+        if (!entry_p->rar_p) {
+                printd(1, "__listrar_tocache: strdup failed for rar_p\n");
+                filecache_invalidate(file);
+                return -ENOMEM;
+        }
         entry_p->file_p = strdup(arc->hdr.FileName);
+        if (!entry_p->file_p) {
+                printd(1, "__listrar_tocache: strdup failed for file_p\n");
+                filecache_invalidate(file);
+                return -ENOMEM;
+        }
         entry_p->flags.vsize_resolved = 1; /* Assume sizes will be resolved */
         if (IS_RAR_DIR(&arc->hdr))
                 entry_p->flags.unresolved = 0;
@@ -2596,12 +2698,20 @@ static struct filecache_entry *__listrar_tocache(char *file,
  *****************************************************************************
  *
  ****************************************************************************/
-static void __listrar_tocache_forcedir(struct filecache_entry *entry_p,
+static int __listrar_tocache_forcedir(struct filecache_entry *entry_p,
                 RARArchiveDataEx *arc, const char *file, char *first_arch,
                 RAROpenArchiveDataEx *d)
 {
         entry_p->rar_p = strdup(first_arch);
+        if (!entry_p->rar_p) {
+                printd(1, "__listrar_tocache_forcedir: strdup failed for rar_p\n");
+                return -ENOMEM;
+        }
         entry_p->file_p = strdup(file);
+        if (!entry_p->file_p) {
+                printd(1, "__listrar_tocache_forcedir: strdup failed for file_p\n");
+                return -ENOMEM;
+        }
         entry_p->flags.force_dir = 1;
         entry_p->flags.unresolved = 0;
 
@@ -2614,6 +2724,7 @@ static void __listrar_tocache_forcedir(struct filecache_entry *entry_p,
         } else {
                 entry_p->flags.multipart = 0;
         }
+        return 0;
 }
 
 /*!
@@ -2642,9 +2753,13 @@ static void __listrar_cachedirentry(const char *mp)
                 struct dircache_entry *dce = dircache_get(safe_path);
                 if (dce) {
                         char *tmp2 = strdup(mp);
-                        dir_entry_add(&dce->dir_entry_list, basename(tmp2),
-                                      NULL, DIR_E_RAR);
-                        free(tmp2);
+                        if (!tmp2) {
+                                printd(1, "__listrar_noswitch: strdup failed for tmp2\n");
+                        } else {
+                                dir_entry_add(&dce->dir_entry_list, basename(tmp2),
+                                              NULL, DIR_E_RAR);
+                                free(tmp2);
+                        }
                 }
                 pthread_rwlock_unlock(&dir_access_lock);
         }
@@ -2683,7 +2798,16 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
         }
 
         char *tmp1 = strdup(arch);
+        if (!tmp1) {
+                printd(1, "listrar: strdup failed for arch\n");
+                return -ENOMEM;
+        }
         char *rar_root = strdup(__gnu_dirname(tmp1));
+        if (!rar_root) {
+                printd(1, "listrar: strdup failed for rar_root\n");
+                free(tmp1);
+                return -ENOMEM;
+        }
         free(tmp1);
         tmp1 = rar_root;
         rar_root += strlen(OPT_STR2(OPT_KEY_SRC, 0));
@@ -2694,6 +2818,11 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
         if (*first_arch == NULL) {
                 /* The caller is responsible for freeing this! */
                 *first_arch = strdup(arch);
+                if (!*first_arch) {
+                        printd(1, "listrar: strdup failed for first_arch\n");
+                        ret = -ENOMEM;
+                        goto out;
+                }
 
                 /* Make sure parent folders are always searched from the first
                  * volume file since sub-folders might actually be placed
@@ -2733,6 +2862,11 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                 if (is_root_path) {
                         int populate_cache = 0;
                         char *safe_path = strdup(arc->hdr.FileName);
+                        if (!safe_path) {
+                                printd(1, "listrar: strdup failed for safe_path (forcedir)\n");
+                                ret = -ENOMEM;
+                                goto out;
+                        }
                         char *tmp = safe_path;
                         while (1) {
                                 char *mp2;
@@ -2746,8 +2880,14 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                                 if (entry_p == NULL) {
                                         printd(3, "Adding %s to cache\n", mp2);
                                         entry_p = filecache_alloc(mp2);
-                                        __listrar_tocache_forcedir(entry_p, arc,
+                                        ret = __listrar_tocache_forcedir(entry_p, arc,
                                                         safe_path, *first_arch, &d);
+                                        if (ret < 0) {
+                                                printd(1, "Failed to cache forcedir entry\n");
+                                                filecache_invalidate(mp2);
+                                                free(mp2);
+                                                goto out;
+                                        }
                                         __listrar_cachedir(mp2);
                                         populate_cache = 1;
                                 }
@@ -2758,6 +2898,11 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                                 /* Entries have been forced into the cache.
                                  * Add the child node to each entry. */
                                 safe_path = strdup(arc->hdr.FileName);
+                                if (!safe_path) {
+                                        printd(1, "listrar: strdup failed for safe_path (cachedir)\n");
+                                        ret = -ENOMEM;
+                                        goto out;
+                                }
                                 tmp = safe_path;
                                 while (1) {
                                         char *mp2;
@@ -2795,7 +2940,19 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                         if (e_p) {
                                 printd(3, "Adding %s to cache\n", mp);
                                 entry_p = filecache_alloc(mp);
-                                filecache_copy(e_p, entry_p);
+                                if (!entry_p) {
+                                        printd(1, "listrar: filecache_alloc failed for filecopy\n");
+                                        pthread_rwlock_unlock(&file_access_lock);
+                                        free(mp);
+                                        continue;
+                                }
+                                if (filecache_copy(e_p, entry_p) != 0) {
+                                        printd(1, "listrar: filecache_copy failed for filecopy\n");
+                                        filecache_invalidate(mp);
+                                        pthread_rwlock_unlock(&file_access_lock);
+                                        free(mp);
+                                        continue;
+                                }
                                 /* Preserve stats of original file */
                                 set_rarstats(entry_p, arc, 0);
                                 goto cache_hit;
@@ -3119,6 +3276,11 @@ static int syncdir(const char *path)
                 int res;
 
                 dir_list = malloc(sizeof(struct dir_entry_list));
+                if (!dir_list) {
+                        printd(1, "syncfs: malloc failed for dir_list\n");
+                        closedir(dp);
+                        return -ENOMEM;
+                }
                 next = dir_list;
                 if (!next) {
                         closedir(dp);
@@ -3164,6 +3326,10 @@ static int syncrar(const char *path)
                 return 0;
 
         dir_list = malloc(sizeof(struct dir_entry_list));
+        if (!dir_list) {
+                printd(1, "syncrar: malloc failed for dir_list\n");
+                return -ENOMEM;
+        }
         next = dir_list;
         if (!next)
                 return -ENOMEM;
@@ -3226,6 +3392,10 @@ static int rar2_getattr(const char *path, struct stat *stbuf)
         if (OPT_FILTER(path))
                 return -ENOENT;
         char *safe_path = strdup(path);
+        if (!safe_path) {
+                printd(1, "rar2_getattr: strdup failed for safe_path\n");
+                return -ENOMEM;
+        }
         char *tmp = safe_path;
         while (1) {
                 safe_path = __gnu_dirname(safe_path);
@@ -3253,6 +3423,10 @@ static int rar2_getattr(const char *path, struct stat *stbuf)
                                 !strcmp(&path[len_path - len_cmd], file_cmd[cmd])) {
                         char *root;
                         char *real = strdup(path);
+                        if (!real) {
+                                printd(1, "rar2_getattr: strdup failed for real (file_cmd)\n");
+                                return -ENOMEM;
+                        }
                         real[len_path - len_cmd] = 0;
                         ABS_ROOT(root, real);
                         if (access(root, F_OK)) {
@@ -3319,6 +3493,10 @@ static int rar2_getattr2(const char *path, struct stat *stbuf)
                                 !strcmp(&path[len_path - len_cmd], file_cmd[cmd])) {
                         char *root;
                         char *real = strdup(path);
+                        if (!real) {
+                                printd(1, "rar2_getattr2: strdup failed for real\n");
+                                return -ENOMEM;
+                        }
                         real[len_path - len_cmd] = 0;
                         ABS_ROOT(root, real);
                         if (filecache_get(real)) {
@@ -3455,7 +3633,10 @@ static int rar2_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
         int ret = 0;
         (void)offset;           /* touch */
 
-        assert(FH_ISSET(fi->fh) && "bad I/O handle");
+        if (!FH_ISSET(fi->fh)) {
+                printd(1, "readdir: bad I/O handle (fh is NULL)\n");
+                return -EIO;
+        }
 
         struct io_handle *io = FH_TOIO(fi->fh);
         if (io == NULL)
@@ -3510,6 +3691,11 @@ static int rar2_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
          * This is a similar action as required for a cache miss in
          * getattr(). */
         char *safe_path = strdup(path);
+        if (!safe_path) {
+                printd(1, "rar2_readdir: strdup failed for safe_path\n");
+                free(dir_list2);
+                return -ENOMEM;
+        }
         char *tmp = safe_path;
         while (*safe_path != '/') {
                 safe_path = __gnu_dirname(safe_path);
@@ -3587,6 +3773,10 @@ static int rar2_readdir2(const char *path, void *buffer,
                 char *first_arch;
                 pthread_rwlock_unlock(&dir_access_lock);
                 dir_list = malloc(sizeof(struct dir_entry_list));
+                if (!dir_list) {
+                        printd(1, "rar2_readdir2: malloc failed for dir_list\n");
+                        return -ENOMEM;
+                }
                 struct dir_entry_list *next = dir_list;
                 if (!next)
                         return -ENOMEM;
@@ -3933,6 +4123,11 @@ static int rar2_open(const char *path, struct fuse_file_info *fi)
                 while (file_cmd[cmd]) {
                         if (!strcmp(&path[strlen(path) - 5], "#info")) {
                                 char *tmp = strdup(path);
+                                if (!tmp) {
+                                        printd(1, "rar2_open: strdup failed for tmp (#info)\n");
+                                        pthread_rwlock_unlock(&file_access_lock);
+                                        return -ENOMEM;
+                                }
                                 tmp[strlen(path) - 5] = 0;
                                 entry_p = path_lookup(tmp, NULL);
                                 free(tmp);
@@ -3959,11 +4154,23 @@ static int rar2_open(const char *path, struct fuse_file_info *fi)
                 struct filecache_entry *e_p = filecache_clone(entry_p);
                 pthread_rwlock_unlock(&file_access_lock);
                 struct RARWcb *wcb = malloc(sizeof(struct RARWcb));
+                if (!wcb) {
+                        printd(1, "rar2_open: malloc failed for wcb\n");
+                        free(io);
+                        return -ENOMEM;
+                }
                 memset(wcb, 0, sizeof(struct RARWcb));
                 FH_SETIO(fi->fh, io);
                 FH_SETTYPE(fi->fh, IO_TYPE_INFO);
                 FH_SETBUF(fi->fh, wcb);
-                FH_SETPATH(fi->fh, strdup(path));
+                char *path_dup = strdup(path);
+                if (!path_dup) {
+                        printd(1, "rar2_open: strdup failed for path_dup\n");
+                        free(wcb);
+                        free(io);
+                        return -ENOMEM;
+                }
+                FH_SETPATH(fi->fh, path_dup);
                 fi->direct_io = 1;   /* skip cache */
                 extract_rar_file_info(e_p, wcb);
                 filecache_freeclone(e_p);
@@ -4117,7 +4324,7 @@ static int rar2_open(const char *path, struct fuse_file_info *fi)
 
 #ifdef DEBUG_READ
                         char out_file[32];
-                        sprintf(out_file, "%s.%d", "output", pid);
+                        snprintf(out_file, sizeof(out_file), "%s.%d", "output", pid);
                         op->dbg_fp = fopen(out_file, "w");
 #endif
                         /*
@@ -4190,6 +4397,10 @@ static inline int access_chk(const char *path, int new_file)
          */
         if (new_file) {
                 char *p = strdup(path); /* In case p is destroyed by dirname() */
+                if (!p) {
+                        printd(1, "is_file_cached: strdup failed for p\n");
+                        return 0;
+                }
                 e = filecache_get(__gnu_dirname(p));
                 free(p);
         } else {
@@ -4248,32 +4459,29 @@ static void walkpath(const char *dname, size_t src_len)
         }
 
         len = strlen(dname);
-        if (len >= FILENAME_MAX - 1)
+#ifdef PATH_MAX
+        if (len >= PATH_MAX - 1)
                 return;
+#endif
 
         dir = opendir(dname);
         if (dir == NULL)
                 goto out;
 
-        /* From www.gnu.org:
-         *   Macro: int FILENAME_MAX
-         *     The value of this macro is an integer constant expression that
-         *     represents the maximum length of a file name string. It is
-         *     defined in stdio.h.
-         *
-         *     Unlike PATH_MAX, this macro is defined even if there is no actual
-         *     limit imposed. In such a case, its value is typically a very
-         *     large number. This is always the case on GNU/Hurd systems.
-         *
-         *     Usage Note: Don't use FILENAME_MAX as the size of an array in
-         *     which to store a file name! You can't possibly make an array that
-         *     big! Use dynamic allocation instead.
+        /* Allocate buffer for path construction: dname + '/' + filename
+         * Use NAME_MAX for max filename component size.
+         * From glibc docs: Don't use FILENAME_MAX for arrays - use dynamic allocation.
          */
-        fn = malloc(FILENAME_MAX);
+#ifdef NAME_MAX
+        size_t fn_size = len + NAME_MAX + 2;
+#else
+        size_t fn_size = len + 256 + 2; /* Fallback if NAME_MAX not defined */
+#endif
+        fn = malloc(fn_size);
         if (fn == NULL)
                 goto out;
 
-        strcpy(fn, dname);
+        memcpy(fn, dname, len);
         fn[len++] = '/';
 
         /* Do not use reentrant version of readdir(3) here.
@@ -4289,7 +4497,7 @@ static void walkpath(const char *dname, size_t src_len)
                                 continue;
                 }
 
-                strncpy(fn + len, dent->d_name, FILENAME_MAX - len);
+                snprintf(fn + len, fn_size - len, "%s", dent->d_name);
 #ifdef _DIRENT_HAVE_D_TYPE
                 if (dent->d_type != DT_UNKNOWN) {
                         if (dent->d_type == DT_DIR)
@@ -4588,9 +4796,13 @@ static int rar2_read(const char *path, char *buffer, size_t size, off_t offset,
 {
         int res;
         struct io_handle *io;
-        assert(FH_ISSET(fi->fh) && "bad I/O handle");
 
         (void)path;             /* touch */
+
+        if (!FH_ISSET(fi->fh)) {
+                printd(1, "read: bad I/O handle (fh is NULL)\n");
+                return -EIO;
+        }
 
         io = FH_TOIO(fi->fh);
         if (!io)
@@ -5190,11 +5402,13 @@ static int check_paths(const char *prog, char *src_path, char *dst_path)
                                 fs_loop = 1;
                                 char *safe_path = strdup(dst_path);
                                 char *tmp = basename(safe_path);
-                                fs_loop_mp_root = malloc(strlen(tmp) + 2);
-                                sprintf(fs_loop_mp_root, "/%s", tmp);
+                                size_t root_size = strlen(tmp) + 2;
+                                fs_loop_mp_root = malloc(root_size);
+                                snprintf(fs_loop_mp_root, root_size, "/%s", tmp);
                                 free(safe_path);
-                                fs_loop_mp_base = malloc(strlen(fs_loop_mp_root) + 2);
-                                sprintf(fs_loop_mp_base, "%s/", fs_loop_mp_root);
+                                size_t base_size = strlen(fs_loop_mp_root) + 2;
+                                fs_loop_mp_base = malloc(base_size);
+                                snprintf(fs_loop_mp_base, base_size, "%s/", fs_loop_mp_root);
                                 fs_loop_mp_base_len = strlen(fs_loop_mp_base);
                         }
                 }
@@ -5335,7 +5549,9 @@ static void scan_fuse_new_args(struct fuse_args *args)
                                         needle = NULL;
                         }
                         if (needle) {
-                                strcpy(needle, needle + strlen(match_w_arg) + 1);
+                                /* Use memmove for overlapping memory regions */
+                                size_t offset = strlen(match_w_arg) + 1;
+                                memmove(needle, needle + offset, strlen(needle + offset) + 1);
                                 break;
                         }
                 }
