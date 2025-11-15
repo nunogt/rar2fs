@@ -177,6 +177,10 @@ static pthread_mutex_t warmup_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t warmup_cond = PTHREAD_COND_INITIALIZER;
 static char *src_path_full = NULL;
 
+/* Phase 3 Batch 2: Timeout infrastructure for UnRAR operations */
+static volatile sig_atomic_t operation_timed_out = 0;
+static pthread_mutex_t timeout_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 #define P_ALIGN_(a) (((a)+page_size_)&~(page_size_-1))
 
 static int extract_rar(char *arch, const char *file, void *arg);
@@ -201,6 +205,15 @@ struct extract_cb_arg {
 
 static int extract_index(const char *, const struct filecache_entry *, off_t);
 static int preload_index(struct iob *, const char *);
+
+/* Phase 3 Batch 2: Timeout wrapper function type */
+typedef int (*timeout_func_t)(void *arg);
+
+/* Phase 3 Batch 2: Wrapper structure for RAROpenArchiveEx */
+struct rar_open_args {
+        struct RAROpenArchiveDataEx *arc;
+        HANDLE result;
+};
 
 #if RARVER_MAJOR > 4
 static const char *file_cmd[] = {
@@ -388,6 +401,78 @@ void __handle_sighup()
         rarconfig_destroy();
         rarconfig_init(OPT_STR(OPT_KEY_SRC, 0),
                        OPT_STR(OPT_KEY_CONFIG, 0));
+}
+
+/*!
+ *****************************************************************************
+ * Phase 3 Batch 2: Timeout alarm handler
+ ****************************************************************************/
+static void timeout_alarm_handler(int sig)
+{
+        (void)sig;  /* touch */
+        operation_timed_out = 1;
+}
+
+/*!
+ *****************************************************************************
+ * Phase 3 Batch 2: Execute function with timeout protection
+ * \param func Function to execute
+ * \param arg Argument to pass to function
+ * \param timeout_sec Timeout in seconds (0 = no timeout)
+ * \param op_name Operation name for logging
+ * \return Function result, or -ETIMEDOUT on timeout
+ ****************************************************************************/
+static int __execute_with_timeout(timeout_func_t func, void *arg,
+                                   int timeout_sec, const char *op_name)
+{
+        struct sigaction sa, old_sa;
+        int ret;
+
+        /* No timeout requested or timeout disabled */
+        if (timeout_sec <= 0) {
+                (void)op_name;  /* Suppress unused parameter warning when no timeout */
+                return func(arg);
+        }
+
+        /* Setup alarm handler */
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = timeout_alarm_handler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+
+        pthread_mutex_lock(&timeout_mutex);
+        operation_timed_out = 0;
+        sigaction(SIGALRM, &sa, &old_sa);
+        alarm(timeout_sec);
+        pthread_mutex_unlock(&timeout_mutex);
+
+        /* Execute function without holding mutex */
+        ret = func(arg);
+
+        /* Clean up - re-acquire mutex */
+        pthread_mutex_lock(&timeout_mutex);
+        alarm(0);
+        sigaction(SIGALRM, &old_sa, NULL);
+
+        if (operation_timed_out) {
+                printd(1, "Operation timeout: %s (exceeded %ds)\n",
+                       op_name, timeout_sec);
+                ret = -ETIMEDOUT;
+        }
+
+        pthread_mutex_unlock(&timeout_mutex);
+        return ret;
+}
+
+/*!
+ *****************************************************************************
+ * Phase 3 Batch 2: Wrapper for RAROpenArchiveEx with timeout
+ ****************************************************************************/
+static int __rar_open_wrapper(void *arg)
+{
+        struct rar_open_args *args = arg;
+        args->result = RAROpenArchiveEx(args->arc);
+        return args->arc->OpenResult;
 }
 
 /*!
@@ -1002,7 +1087,18 @@ static int __RARVolNameToFirstName(char *arch, int vtype)
                 vol = 1;
         }
 
+        /* Phase 3 Batch 2: Loop iteration limit to prevent infinite loops */
+        int attempt_count = 0;
+        int max_attempts = 100;  /* Hard limit, not configurable */
+
         for (;;) {
+                if (++attempt_count > max_attempts) {
+                        printd(1, "__RARVolNameToFirstName: attempt limit exceeded (%d)\n",
+                               max_attempts);
+                        ret = -1;
+                        goto out;
+                }
+
                 d.ArcName = (char *)arch;   /* Horrible cast! But hey... it is the API! */
                 d.UserData = (LPARAM)arch;
                 h = RAROpenArchiveEx(&d);
@@ -1872,10 +1968,21 @@ static int collect_files(const char *arch)
         HANDLE h;
 
         arch_ = strdup(arch);
-        if (!arch_)
+        if (!arch_) {
                 return -ERAR_NO_MEMORY;
+        }
 
-        h = RAROpenArchiveEx(&d);
+        /* Phase 3 Batch 2: Wrap RAROpenArchiveEx with timeout */
+        struct rar_open_args open_args = {.arc = &d};
+        int timeout_sec = OPT_SET(OPT_KEY_OPERATION_TIMEOUT) ?
+                          OPT_INT(OPT_KEY_OPERATION_TIMEOUT, 0) : 30;
+        if (__execute_with_timeout(__rar_open_wrapper, &open_args,
+                                   timeout_sec, "collect_files:RAROpenArchiveEx") < 0) {
+                printd(1, "collect_files: archive open timed out: %s\n", arch);
+                free(arch_);
+                return -ETIMEDOUT;
+        }
+        h = open_args.result;
 
         /* Check for fault */
         if (d.OpenResult != ERAR_SUCCESS) {
@@ -1893,7 +2000,16 @@ static int collect_files(const char *arch)
                 }
                 RARCloseArchive(h);
                 d.ArcName = (char *)arch_;
-                h = RAROpenArchiveEx(&d);
+
+                /* Phase 3 Batch 2: Wrap second RAROpenArchiveEx with timeout */
+                open_args.arc = &d;
+                if (__execute_with_timeout(__rar_open_wrapper, &open_args,
+                                           timeout_sec, "collect_files:RAROpenArchiveEx(vol)") < 0) {
+                        printd(1, "collect_files: volume archive open timed out: %s\n", arch_);
+                        free(arch_);
+                        return -ETIMEDOUT;
+                }
+                h = open_args.result;
 
                 /* Check for fault */
                 if (d.OpenResult != ERAR_SUCCESS) {
@@ -1942,7 +2058,15 @@ skip_file_check:
 
         /* Let libunrar deal with the collection of volume parts */
         if (d.Flags & ROADF_VOLUME) {
-                h = RAROpenArchiveEx(&d);
+                /* Phase 3 Batch 2: Wrap third RAROpenArchiveEx with timeout */
+                open_args.arc = &d;
+                if (__execute_with_timeout(__rar_open_wrapper, &open_args,
+                                           timeout_sec, "collect_files:RAROpenArchiveEx(parts)") < 0) {
+                        printd(1, "collect_files: volume parts open timed out\n");
+                        free(arch_);
+                        return -ETIMEDOUT;
+                }
+                h = open_args.result;
 
                 /* Check for fault */
                 if (d.OpenResult != ERAR_SUCCESS) {
@@ -1951,7 +2075,18 @@ skip_file_check:
                         free(arch_);
                         return -d.OpenResult;
                 }
+                /* Phase 3 Batch 2: Loop iteration limit to prevent infinite loops */
+                int iteration_count = 0;
+                int max_volumes = OPT_SET(OPT_KEY_MAX_VOLUME_COUNT) ?
+                                  OPT_INT(OPT_KEY_MAX_VOLUME_COUNT, 0) : 1000;
+
                 while (1) {
+                        if (++iteration_count > max_volumes) {
+                                printd(1, "collect_files: iteration limit exceeded (%d volumes)\n",
+                                       max_volumes);
+                                break;
+                        }
+
                         dll_result = RARReadHeaderEx(h, &header);
                         if (dll_result != ERAR_SUCCESS) {
                                 if (dll_result == ERAR_END_ARCHIVE)
@@ -2162,6 +2297,7 @@ index_error:
                 close(eofd.fd);
         if (hdl)
                 RARCloseArchive(hdl);
+
         return e ? -1 : 0;
 }
 
@@ -2258,7 +2394,18 @@ static int extract_rar(char *arch, const char *file, void *arg)
         d.UserData = (LPARAM)&cb_arg;
         struct RARHeaderDataEx header;
         memset(&header, 0, sizeof(header));
-        HANDLE hdl = RAROpenArchiveEx(&d);
+
+        /* Phase 3 Batch 2: Wrap RAROpenArchiveEx with timeout */
+        struct rar_open_args open_args = {.arc = &d};
+        int timeout_sec = OPT_SET(OPT_KEY_OPERATION_TIMEOUT) ?
+                          OPT_INT(OPT_KEY_OPERATION_TIMEOUT, 0) : 30;
+        if (__execute_with_timeout(__rar_open_wrapper, &open_args,
+                                   timeout_sec, "extract_rar:RAROpenArchiveEx") < 0) {
+                printd(1, "extract_rar: archive open timed out: %s\n", arch);
+                return -ETIMEDOUT;
+        }
+        HANDLE hdl = open_args.result;
+
         if (d.OpenResult)
                 goto extract_error;
 
@@ -2928,7 +3075,17 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
         d.OpenMode = RAR_OM_LIST_INCSPLIT;
         d.Callback = list_callback_noswitch;
         d.UserData = (LPARAM)arch;
-        HANDLE hdl = RAROpenArchiveEx(&d);
+
+        /* Phase 3 Batch 2: Wrap RAROpenArchiveEx with timeout */
+        struct rar_open_args open_args = {.arc = &d};
+        int timeout_sec = OPT_SET(OPT_KEY_OPERATION_TIMEOUT) ?
+                          OPT_INT(OPT_KEY_OPERATION_TIMEOUT, 0) : 30;
+        if (__execute_with_timeout(__rar_open_wrapper, &open_args,
+                                   timeout_sec, "listrar:RAROpenArchiveEx") < 0) {
+                printd(1, "listrar: archive open timed out: %s\n", arch);
+                return -ETIMEDOUT;
+        }
+        HANDLE hdl = open_args.result;
 
         /* Check for fault */
         if (d.OpenResult) {
@@ -2940,7 +3097,16 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
         if (d.Flags & ROADF_ENCHEADERS) {
                 RARCloseArchive(hdl);
                 d.Callback = list_callback;
-                hdl = RAROpenArchiveEx(&d);
+
+                /* Phase 3 Batch 2: Wrap second RAROpenArchiveEx with timeout */
+                open_args.arc = &d;
+                if (__execute_with_timeout(__rar_open_wrapper, &open_args,
+                                           timeout_sec, "listrar:RAROpenArchiveEx(enc)") < 0) {
+                        printd(1, "listrar: encrypted archive open timed out: %s\n", arch);
+                        return -ETIMEDOUT;
+                }
+                hdl = open_args.result;
+
                 if (final)
                         *final = 1;
         }
@@ -2984,8 +3150,20 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                 }
         }
 
+        /* Phase 3 Batch 2: Loop iteration limit to prevent infinite loops */
+        int entry_count = 0;
+        /* Fix: OPT_INT's 2nd param is array index, not default value */
+        int max_entries = OPT_SET(OPT_KEY_MAX_ARCHIVE_ENTRIES) ?
+                          OPT_INT(OPT_KEY_MAX_ARCHIVE_ENTRIES, 0) : 10000;
+
         int dll_result = ERAR_SUCCESS;
         while (dll_result == ERAR_SUCCESS) {
+                if (++entry_count > max_entries) {
+                        printd(1, "listrar: entry limit exceeded (%d entries)\n",
+                               max_entries);
+                        break;
+                }
+
                 if ((dll_result = RARListArchiveEx(hdl, &arc))) {
                         if (dll_result != ERAR_EOPEN) {
                                 if (dll_result != ERAR_END_ARCHIVE)
@@ -6009,6 +6187,9 @@ static struct option longopts[] = {
         {"date-rar",          no_argument, NULL, OPT_ADDR(OPT_KEY_DATE_RAR)},
         {"config",      required_argument, NULL, OPT_ADDR(OPT_KEY_CONFIG)},
         {"no-inherit-perm",   no_argument, NULL, OPT_ADDR(OPT_KEY_NO_INHERIT_PERM)},
+        {"operation-timeout", required_argument, NULL, OPT_ADDR(OPT_KEY_OPERATION_TIMEOUT)},
+        {"max-volume-count", required_argument, NULL, OPT_ADDR(OPT_KEY_MAX_VOLUME_COUNT)},
+        {"max-archive-entries", required_argument, NULL, OPT_ADDR(OPT_KEY_MAX_ARCHIVE_ENTRIES)},
         {NULL,                          0, NULL, 0}
 };
 

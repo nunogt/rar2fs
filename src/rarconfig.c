@@ -37,6 +37,7 @@
 #include "version.hpp"
 #include "rarconfig.h"
 #include "dirname.h"
+#include "debug.h"
 
 #define RARCONFIG_SZ 1024
 

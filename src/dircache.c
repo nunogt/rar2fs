@@ -218,4 +218,3 @@ struct dircache_entry *dircache_get(const char *path)
         }
         return NULL;
 }
-

@@ -240,4 +240,3 @@ void filecache_destroy()
         hashtable_destroy(ht);
         ht = NULL;
 }
-
