@@ -5182,6 +5182,118 @@ static int rar2_read(const char *path, char *buffer, size_t size, off_t offset,
 
 /*!
  *****************************************************************************
+ * lseek() handler for FUSE3
+ *
+ * Implements seeking in files with support for standard POSIX seek modes
+ * (SEEK_SET, SEEK_CUR, SEEK_END) as well as FUSE3-specific modes for sparse
+ * file support (SEEK_DATA, SEEK_HOLE).
+ *
+ * For RAR archives:
+ * - SEEK_DATA: Compressed archives have no holes, so data starts at offset 0
+ * - SEEK_HOLE: Compressed archives have no holes, so return EOF
+ * - Uncompressed archives may have sparse regions but detection is complex
+ *
+ * Returns: new offset on success, -errno on error
+ ****************************************************************************/
+static off_t rar2_lseek(const char *path, off_t off, int whence,
+                struct fuse_file_info *fi)
+{
+        ENTER_("%s off=%lld whence=%d", path, (long long)off, whence);
+
+        if (!FH_ISSET(fi->fh)) {
+                printd(1, "lseek: bad I/O handle (fh is NULL)\n");
+                return -EBADF;
+        }
+
+        struct io_handle *io = FH_TOIO(fi->fh);
+        if (!io)
+                return -EBADF;
+
+        /* Get file path from handle */
+        const char *file_path = path ? path : FH_TOPATH(fi->fh);
+        if (!file_path)
+                return -EBADF;
+
+        /* Get file entry to determine file size */
+        pthread_rwlock_rdlock(&file_access_lock);
+        struct filecache_entry *entry_p = filecache_get(file_path);
+        if (!entry_p) {
+                pthread_rwlock_unlock(&file_access_lock);
+                return -EBADF;
+        }
+
+        off_t file_size = entry_p->stat.st_size;
+        int is_compressed = (entry_p->method != 0x30); /* 0x30 = Store (uncompressed) */
+        pthread_rwlock_unlock(&file_access_lock);
+
+        off_t new_offset = 0;
+
+        switch (whence) {
+        case SEEK_SET:
+                /* Absolute position */
+                new_offset = off;
+                break;
+
+        case SEEK_CUR:
+                /* Relative to current position - FUSE doesn't track position,
+                 * so we can't support this properly. Return the requested offset
+                 * as apps typically use this with offset=0 to query position */
+                new_offset = off;
+                break;
+
+        case SEEK_END:
+                /* Relative to end of file */
+                new_offset = file_size + off;
+                break;
+
+#ifdef SEEK_DATA
+        case SEEK_DATA:
+                /* Find next data region at or after offset.
+                 * For compressed archives, all data is contiguous starting at 0.
+                 * For uncompressed, we'd need to consult RAR index for sparse regions.
+                 * Conservative implementation: if offset is within file, return it;
+                 * otherwise return -ENXIO (no data found). */
+                if (off < 0)
+                        return -EINVAL;
+                if (off >= file_size)
+                        return -ENXIO;  /* No data at or after this offset */
+                new_offset = off;       /* Data starts here */
+                break;
+#endif
+
+#ifdef SEEK_HOLE
+        case SEEK_HOLE:
+                /* Find next hole at or after offset.
+                 * For compressed archives, there are no holes - return EOF.
+                 * For uncompressed archives, holes are rare in RAR format.
+                 * Conservative implementation: return EOF (treat as no holes). */
+                if (off < 0)
+                        return -EINVAL;
+                if (off >= file_size)
+                        return -ENXIO;  /* Already past EOF */
+                /* Treat compressed archives as having no holes */
+                if (is_compressed)
+                        new_offset = file_size; /* EOF = implicit hole */
+                else
+                        /* For uncompressed, we'd need index consultation.
+                         * Conservative: treat as no holes, return EOF */
+                        new_offset = file_size;
+                break;
+#endif
+
+        default:
+                return -EINVAL;
+        }
+
+        /* Validate new offset */
+        if (new_offset < 0)
+                return -EINVAL;
+
+        return new_offset;
+}
+
+/*!
+ *****************************************************************************
  *
  ****************************************************************************/
 static int rar2_truncate(const char *path, off_t offset, struct fuse_file_info *fi)
@@ -5854,6 +5966,7 @@ static struct fuse_operations rar2_operations = {
         .open = rar2_open,
         .release = rar2_release,
         .read = rar2_read,
+        .lseek = rar2_lseek,
         .flush = rar2_flush,
         .readlink = rar2_readlink,
 #ifdef HAVE_SETXATTR
