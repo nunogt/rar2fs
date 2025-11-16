@@ -1,0 +1,5 @@
+This is a small test file.
+It contains multiple lines of text.
+This file will be used to test basic RAR archive functionality.
+Line 4
+Line 5
