@@ -83,13 +83,13 @@
 #define RD_SYNC_READ 3
 #define RD_ASYNC_READ 4
 
-/* Maximum chunk size for UnRAR callbacks (Phase 2 Batch 1 - Finding 9/10) */
+/* Maximum chunk size for UnRAR callbacks (128MB) */
 #define MAX_CHUNK_SIZE (128 * 1024 * 1024)  /* 128MB */
 
-/* Maximum reasonable file size for validation (Phase 2 Batch 3 - Finding 14/15/17/24) */
+/* Maximum reasonable file size for validation (100GB) */
 #define MAX_REASONABLE_FILE_SIZE (100ULL * 1024 * 1024 * 1024)  /* 100GB */
 
-/* Maximum password buffer length (Phase 2 Batch 3 - Finding 26) */
+/* Maximum password buffer length */
 #define MAX_PASSWORD_LEN 1024
 
 /*#define DEBUG_READ*/
@@ -177,7 +177,7 @@ static pthread_mutex_t warmup_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t warmup_cond = PTHREAD_COND_INITIALIZER;
 static char *src_path_full = NULL;
 
-/* Phase 3 Batch 2: Timeout infrastructure for UnRAR operations */
+/* Timeout infrastructure for UnRAR operations */
 static volatile sig_atomic_t operation_timed_out = 0;
 static pthread_mutex_t timeout_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -206,10 +206,10 @@ struct extract_cb_arg {
 static int extract_index(const char *, const struct filecache_entry *, off_t);
 static int preload_index(struct iob *, const char *);
 
-/* Phase 3 Batch 2: Timeout wrapper function type */
+/* Timeout wrapper function type */
 typedef int (*timeout_func_t)(void *arg);
 
-/* Phase 3 Batch 2: Wrapper structure for RAROpenArchiveEx */
+/* Wrapper structure for RAROpenArchiveEx with timeout */
 struct rar_open_args {
         struct RAROpenArchiveDataEx *arc;
         HANDLE result;
@@ -405,7 +405,7 @@ void __handle_sighup()
 
 /*!
  *****************************************************************************
- * Phase 3 Batch 2: Timeout alarm handler
+ * Timeout alarm handler for UnRAR operations
  ****************************************************************************/
 static void timeout_alarm_handler(int sig)
 {
@@ -415,7 +415,7 @@ static void timeout_alarm_handler(int sig)
 
 /*!
  *****************************************************************************
- * Phase 3 Batch 2: Execute function with timeout protection
+ * Execute function with timeout protection
  * \param func Function to execute
  * \param arg Argument to pass to function
  * \param timeout_sec Timeout in seconds (0 = no timeout)
@@ -466,7 +466,7 @@ static int __execute_with_timeout(timeout_func_t func, void *arg,
 
 /*!
  *****************************************************************************
- * Phase 3 Batch 2: Wrapper for RAROpenArchiveEx with timeout
+ * Wrapper for RAROpenArchiveEx with timeout protection
  ****************************************************************************/
 static int __rar_open_wrapper(void *arg)
 {
@@ -945,7 +945,7 @@ static char *get_vname(int t, const char *str, int vol, int len, int pos)
                 char f1[16];
                 snprintf(f1, sizeof(f1), "%%0%dd", len);
                 snprintf(f, sizeof(f), f1, vol);
-                /* Finding 19: Ensure null termination after strncpy */
+                /* Preserve null termination when copying into middle of string */
                 strncpy(&s[pos], f, len);
                 /* s is already null-terminated from strdup, copying middle chars preserves it */
         } else {
@@ -961,7 +961,7 @@ static char *get_vname(int t, const char *str, int vol, int len, int pos)
                         --pos;
                         ++len;
                 }
-                /* Finding 19: Ensure null termination after strncpy */
+                /* Preserve null termination when copying into middle of string */
                 strncpy(&s[pos], f, len);
                 /* s is already null-terminated from strdup, copying middle chars preserves it */
         }
@@ -1087,7 +1087,7 @@ static int __RARVolNameToFirstName(char *arch, int vtype)
                 vol = 1;
         }
 
-        /* Phase 3 Batch 2: Loop iteration limit to prevent infinite loops */
+        /* Loop iteration limit to prevent infinite loops */
         int attempt_count = 0;
         int max_attempts = 100;  /* Hard limit, not configurable */
 
@@ -1489,7 +1489,7 @@ static int lread_rar_idx(char *buf, size_t size, off_t offset,
         res = pread(op->buf->idx.fd, buf, size, off + sizeof(struct idx_head));
         if (res == -1)
                 return -errno;
-        /* Check for partial or zero reads (Finding 21) */
+        /* Detect and handle partial or zero reads */
         if (res == 0) {
                 printd(1, "pread: unexpected EOF at offset %" PRIu64 "\n",
                        off + sizeof(struct idx_head));
@@ -1972,7 +1972,7 @@ static int collect_files(const char *arch)
                 return -ERAR_NO_MEMORY;
         }
 
-        /* Phase 3 Batch 2: Wrap RAROpenArchiveEx with timeout */
+        /* Wrap RAROpenArchiveEx with timeout */
         struct rar_open_args open_args = {.arc = &d};
         int timeout_sec = OPT_SET(OPT_KEY_OPERATION_TIMEOUT) ?
                           OPT_INT(OPT_KEY_OPERATION_TIMEOUT, 0) : 30;
@@ -2001,7 +2001,7 @@ static int collect_files(const char *arch)
                 RARCloseArchive(h);
                 d.ArcName = (char *)arch_;
 
-                /* Phase 3 Batch 2: Wrap second RAROpenArchiveEx with timeout */
+                /* Wrap RAROpenArchiveEx with timeout */
                 open_args.arc = &d;
                 if (__execute_with_timeout(__rar_open_wrapper, &open_args,
                                            timeout_sec, "collect_files:RAROpenArchiveEx(vol)") < 0) {
@@ -2058,7 +2058,7 @@ skip_file_check:
 
         /* Let libunrar deal with the collection of volume parts */
         if (d.Flags & ROADF_VOLUME) {
-                /* Phase 3 Batch 2: Wrap third RAROpenArchiveEx with timeout */
+                /* Wrap RAROpenArchiveEx with timeout */
                 open_args.arc = &d;
                 if (__execute_with_timeout(__rar_open_wrapper, &open_args,
                                            timeout_sec, "collect_files:RAROpenArchiveEx(parts)") < 0) {
@@ -2075,7 +2075,7 @@ skip_file_check:
                         free(arch_);
                         return -d.OpenResult;
                 }
-                /* Phase 3 Batch 2: Loop iteration limit to prevent infinite loops */
+                /* Loop iteration limit to prevent infinite loops */
                 int iteration_count = 0;
                 int max_volumes = OPT_SET(OPT_KEY_MAX_VOLUME_COUNT) ?
                                   OPT_INT(OPT_KEY_MAX_VOLUME_COUNT, 0) : 1000;
@@ -2095,7 +2095,7 @@ skip_file_check:
                                         dll_result = ERAR_EOPEN;
                                 break;
                         }
-                        /* Check RARProcessFile return value (Finding 1) */
+                        /* Validate RARProcessFile return value */
                         int skip_res = RARProcessFile(h, RAR_SKIP, NULL, NULL);
                         if (skip_res != ERAR_SUCCESS) {
                                 printd(1, "RARProcessFile failed in volume collection: %d\n", skip_res);
@@ -2129,7 +2129,7 @@ static int CALLBACK index_callback(UINT msg, LPARAM UserData,
         struct eof_cb_arg *eofd = (struct eof_cb_arg *)UserData;
 
         if (msg == UCM_PROCESSDATA) {
-                /* Validate chunk size before processing (Finding 10) */
+                /* Validate chunk size is within acceptable bounds */
                 if (P2 <= 0 || P2 > MAX_CHUNK_SIZE) {
                         printd(1, "index_callback: invalid chunk size %ld (max %ld)\n",
                                (long)P2, (long)MAX_CHUNK_SIZE);
@@ -2153,7 +2153,7 @@ static int CALLBACK index_callback(UINT msg, LPARAM UserData,
                 }
                 if (eofd->coff == eofd->toff) {
                         eofd->size += P2;
-                        /* Check for partial writes (Finding 11) */
+                        /* Detect and handle partial writes */
                         ssize_t written = write(eofd->fd, (char *)P1, P2);
                         if (written != (ssize_t)P2) {
                                 if (written == -1) {
@@ -2171,7 +2171,7 @@ static int CALLBACK index_callback(UINT msg, LPARAM UserData,
                 }
 
         }
-        /* Finding 23: Clarify access() return semantics with logging */
+        /* Check volume file accessibility and log errors */
         if (msg == UCM_CHANGEVOLUME) {
                 int res = access((char *)P1, F_OK);
                 if (res != 0) {
@@ -2182,7 +2182,7 @@ static int CALLBACK index_callback(UINT msg, LPARAM UserData,
         }
 #if RARVER_MAJOR > 4 || ( RARVER_MAJOR == 4 && RARVER_MINOR >= 20 )
         if (msg == UCM_NEEDPASSWORDW) {
-                /* Validate password buffer size (Finding 26) */
+                /* Validate password buffer size to prevent overflow */
                 if (P2 > MAX_PASSWORD_LEN) {
                         printd(1, "index_callback: password buffer size too large: %ld (max %d)\n",
                                (long)P2, MAX_PASSWORD_LEN);
@@ -2230,7 +2230,7 @@ static int extract_index(const char *path, const struct filecache_entry *entry_p
         d.UserData = (LPARAM)&eofd;
 
         ABS_ROOT(r2i, path);
-        /* Finding 20: Validate offset before strcpy to prevent underflow */
+        /* Validate string length before modifying extension */
         size_t r2i_len = strlen(r2i);
         if (r2i_len < 3) {
                 printd(1, "create_index: path too short for .r2i extension: %s\n", r2i);
@@ -2252,7 +2252,7 @@ static int extract_index(const char *path, const struct filecache_entry *entry_p
         while (1) {
                 if (RARReadHeaderEx(hdl, &header))
                         break;
-                /* Validate filename is null-terminated (Finding 16) */
+                /* Ensure header filename is properly null-terminated */
                 if (strnlen(header.FileName, sizeof(header.FileName)) >= sizeof(header.FileName)) {
                         printd(1, "create_index: invalid filename in header (not null-terminated)\n");
                         e = ERAR_BAD_DATA;
@@ -2261,7 +2261,7 @@ static int extract_index(const char *path, const struct filecache_entry *entry_p
                 /* We won't extract subdirs */
                 if (IS_RAR_DIR(&header) ||
                         strcmp(header.FileName, entry_p->file_p)) {
-                                /* Distinguish errors from EOF (Finding 2) */
+                                /* Check for skip errors and distinguish from EOF */
                                 int skip_res = RARProcessFile(hdl, RAR_SKIP, NULL, NULL);
                                 if (skip_res != ERAR_SUCCESS) {
                                         printd(1, "RARProcessFile skip failed in index generation: %d\n", skip_res);
@@ -2270,7 +2270,7 @@ static int extract_index(const char *path, const struct filecache_entry *entry_p
                                         break;
                                 }
                 } else {
-                        /* Add error logging (Finding 7) */
+                        /* Test file extraction and log any errors */
                         e = RARProcessFile(hdl, RAR_TEST, NULL, NULL);
                         if (e) {
                                 printd(1, "RARProcessFile test failed in index generation: %d\n", e);
@@ -2279,7 +2279,7 @@ static int extract_index(const char *path, const struct filecache_entry *entry_p
                                 head.offset = offset;
                                 head.size = eofd.size;
                                 lseek(eofd.fd, (off_t)0, SEEK_SET);
-                                /* Validate index header write (Finding 12) */
+                                /* Verify complete write of index header */
                                 ssize_t hdr_written = write(eofd.fd, (void*)&head,
                                                 sizeof(struct idx_head));
                                 if (hdr_written != sizeof(struct idx_head)) {
@@ -2321,7 +2321,7 @@ static int CALLBACK extract_callback(UINT msg, LPARAM UserData,
                         }
                         return -1;
                 }
-                /* Validate chunk size before processing (Finding 9) */
+                /* Validate chunk size is within acceptable bounds */
                 if (P2 <= 0 || P2 > MAX_CHUNK_SIZE) {
                         printd(1, "extract_callback: invalid chunk size %ld (max %ld)\n",
                                (long)P2, (long)MAX_CHUNK_SIZE);
@@ -2343,7 +2343,7 @@ static int CALLBACK extract_callback(UINT msg, LPARAM UserData,
                         return -1;
                 }
         }
-        /* Finding 23: Clarify access() return semantics with logging */
+        /* Check volume file accessibility and log errors */
         if (msg == UCM_CHANGEVOLUME) {
                 int res = access((char *)P1, F_OK);
                 if (res != 0) {
@@ -2354,7 +2354,7 @@ static int CALLBACK extract_callback(UINT msg, LPARAM UserData,
         }
 #if RARVER_MAJOR > 4 || ( RARVER_MAJOR == 4 && RARVER_MINOR >= 20 )
         if (msg == UCM_NEEDPASSWORDW) {
-                /* Validate password buffer size (Finding 26) */
+                /* Validate password buffer size to prevent overflow */
                 if (P2 > MAX_PASSWORD_LEN) {
                         printd(1, "extract_callback: password buffer size too large: %ld (max %d)\n",
                                (long)P2, MAX_PASSWORD_LEN);
@@ -2395,7 +2395,7 @@ static int extract_rar(char *arch, const char *file, void *arg)
         struct RARHeaderDataEx header;
         memset(&header, 0, sizeof(header));
 
-        /* Phase 3 Batch 2: Wrap RAROpenArchiveEx with timeout */
+        /* Wrap RAROpenArchiveEx with timeout */
         struct rar_open_args open_args = {.arc = &d};
         int timeout_sec = OPT_SET(OPT_KEY_OPERATION_TIMEOUT) ?
                           OPT_INT(OPT_KEY_OPERATION_TIMEOUT, 0) : 30;
@@ -2415,7 +2415,7 @@ static int extract_rar(char *arch, const char *file, void *arg)
                         break;
                 /* We won't extract subdirs */
                 if (IS_RAR_DIR(&header) || strcmp(header.FileName, file)) {
-                        /* Distinguish errors from EOF (Finding 3) */
+                        /* Check for skip errors and distinguish from EOF */
                         int skip_res = RARProcessFile(hdl, RAR_SKIP, NULL, NULL);
                         if (skip_res != ERAR_SUCCESS) {
                                 printd(1, "RARProcessFile skip failed in extraction: %d\n", skip_res);
@@ -2424,7 +2424,7 @@ static int extract_rar(char *arch, const char *file, void *arg)
                                 break;
                         }
                 } else {
-                        /* Add error logging (Finding 8) */
+                        /* Test file extraction and log any errors */
                         ret = RARProcessFile(hdl, RAR_TEST, NULL, NULL);
                         if (ret) {
                                 printd(1, "RARProcessFile test failed in extraction: %d\n", ret);
@@ -2494,7 +2494,7 @@ static uint64_t extract_file_size(char *arch, const char *file)
                          * uncompressed size. */
                         if (header.Method == FHD_STORING &&
                                         !IS_RAR_DIR(&header)) {
-                                /* Validate pack size (Finding 14) */
+                                /* Validate packed size is within reasonable limits */
                                 uint64_t pack_size = GET_RAR_PACK_SZ(&header);
                                 if (pack_size > MAX_REASONABLE_FILE_SIZE) {
                                         printd(1, "extract_file_size: suspicious pack size %llu (max %llu)\n",
@@ -2502,7 +2502,7 @@ static uint64_t extract_file_size(char *arch, const char *file)
                                                (unsigned long long)MAX_REASONABLE_FILE_SIZE);
                                         break;
                                 }
-                                /* Check for overflow (Finding 24) */
+                                /* Prevent integer overflow when accumulating size */
                                 if (size > UINT64_MAX - pack_size) {
                                         printd(1, "extract_file_size: size overflow detected\n");
                                         size = UINT64_MAX;
@@ -2510,7 +2510,7 @@ static uint64_t extract_file_size(char *arch, const char *file)
                                 }
                                 size += pack_size;
                         } else {
-                                /* Validate uncompressed size (Finding 14) */
+                                /* Validate uncompressed size is within reasonable limits */
                                 uint64_t file_size = GET_RAR_SZ(&header);
                                 if (file_size > MAX_REASONABLE_FILE_SIZE) {
                                         printd(1, "extract_file_size: suspicious file size %llu (max %llu)\n",
@@ -2523,7 +2523,7 @@ static uint64_t extract_file_size(char *arch, const char *file)
                                 break;
                         }
                 }
-                /* Distinguish errors from EOF (Finding 4) */
+                /* Check for skip errors and distinguish from EOF */
                 int skip_res = RARProcessFile(hdl, RAR_SKIP, NULL, NULL);
                 if (skip_res != ERAR_SUCCESS) {
                         printd(1, "RARProcessFile skip failed in size calculation: %d\n", skip_res);
@@ -2921,7 +2921,7 @@ static struct filecache_entry *__listrar_tocache(char *file,
         entry_p->file_p = strdup(arc->hdr.FileName);
         if (!entry_p->file_p) {
                 printd(1, "__listrar_tocache: strdup failed for file_p\n");
-                /* Finding 22: Clean up first allocation to prevent memory leak */
+                /* Free previously allocated memory to prevent leak */
                 free(entry_p->rar_p);
                 entry_p->rar_p = NULL;
                 filecache_invalidate(file);
@@ -3076,7 +3076,7 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
         d.Callback = list_callback_noswitch;
         d.UserData = (LPARAM)arch;
 
-        /* Phase 3 Batch 2: Wrap RAROpenArchiveEx with timeout */
+        /* Wrap RAROpenArchiveEx with timeout */
         struct rar_open_args open_args = {.arc = &d};
         int timeout_sec = OPT_SET(OPT_KEY_OPERATION_TIMEOUT) ?
                           OPT_INT(OPT_KEY_OPERATION_TIMEOUT, 0) : 30;
@@ -3098,7 +3098,7 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                 RARCloseArchive(hdl);
                 d.Callback = list_callback;
 
-                /* Phase 3 Batch 2: Wrap second RAROpenArchiveEx with timeout */
+                /* Wrap RAROpenArchiveEx with timeout */
                 open_args.arc = &d;
                 if (__execute_with_timeout(__rar_open_wrapper, &open_args,
                                            timeout_sec, "listrar:RAROpenArchiveEx(enc)") < 0) {
@@ -3150,7 +3150,7 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                 }
         }
 
-        /* Phase 3 Batch 2: Loop iteration limit to prevent infinite loops */
+        /* Loop iteration limit to prevent infinite loops */
         int entry_count = 0;
         /* Fix: OPT_INT's 2nd param is array index, not default value */
         int max_entries = OPT_SET(OPT_KEY_MAX_ARCHIVE_ENTRIES) ?
@@ -3191,7 +3191,7 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                         if (!safe_path) {
                                 printd(1, "listrar: strdup failed for safe_path (forcedir)\n");
                                 ret = -ENOMEM;
-                                /* Finding 25: Unlock before goto to prevent deadlock */
+                                /* Release lock before jumping to cleanup */
                                 pthread_rwlock_unlock(&file_access_lock);
                                 goto out;
                         }
@@ -3214,7 +3214,7 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                                                 printd(1, "Failed to cache forcedir entry\n");
                                                 filecache_invalidate(mp2);
                                                 free(mp2);
-                                                /* Finding 25: Unlock before goto to prevent deadlock */
+                                                /* Release lock before jumping to cleanup */
                                                 pthread_rwlock_unlock(&file_access_lock);
                                                 goto out;
                                         }
@@ -3231,7 +3231,7 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                                 if (!safe_path) {
                                         printd(1, "listrar: strdup failed for safe_path (cachedir)\n");
                                         ret = -ENOMEM;
-                                        /* Finding 25: Unlock before goto to prevent deadlock */
+                                        /* Release lock before jumping to cleanup */
                                         pthread_rwlock_unlock(&file_access_lock);
                                         goto out;
                                 }
@@ -4258,7 +4258,7 @@ static int preload_index(struct iob *buf, const char *path)
 
         char *r2i;
         ABS_ROOT(r2i, path);
-        /* Finding 20: Validate offset before strcpy to prevent underflow */
+        /* Validate string length before modifying extension */
         size_t r2i_len = strlen(r2i);
         if (r2i_len < 3) {
                 printd(1, "preload_index: path too short for .r2i extension: %s\n", r2i);
@@ -4304,7 +4304,7 @@ static int preload_index(struct iob *buf, const char *path)
                 buf->idx.data_p = MAP_FAILED;
                 return -1;
         }
-        /* Validate index header read (Finding 13) */
+        /* Verify complete read of index header */
         ssize_t bytes_read = read(fd, buf->idx.data_p, sizeof(struct idx_head));
         if (bytes_read != sizeof(struct idx_head)) {
                 printd(1, "preload_index: short read of index header (%zd of %zu bytes)\n",

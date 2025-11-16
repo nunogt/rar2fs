@@ -1,0 +1,31 @@
+RAR2FS TEST SUITE - QUICK START
+================================
+
+ONE-LINE TEST COMMAND:
+---------------------
+cd test-suite/scripts && ./run-all-tests.sh
+
+OR RUN INDIVIDUALLY:
+-------------------
+cd test-suite/scripts
+
+# 1. Create test archives (only need to do this once)
+./create-archives.sh
+
+# 2. Run basic functional tests (11 tests)
+./run-basic-tests.sh
+
+# 3. Run AddressSanitizer memory tests (13 tests)
+./run-asan-tests.sh
+
+EXPECTED RESULTS:
+----------------
+Basic tests: 11/11 PASS
+ASan tests:  9/13 PASS (4 failures are FUSE memory leaks, not rar2fs bugs)
+
+TROUBLESHOOTING:
+---------------
+If mount fails: fusermount -u test-suite/mount
+If ASan not detected: ./build-with-asan.sh (from project root)
+
+Full documentation: test-suite/README.md
