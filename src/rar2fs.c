@@ -3912,6 +3912,9 @@ static int rar2_opendir2(const char *path, struct fuse_file_info *fi)
         FH_SETTYPE(fi->fh, IO_TYPE_DIR);
         FH_SETPATH(fi->fh, strdup(path));
 
+        /* Enable kernel readdir caching (archives are immutable) */
+        fi->cache_readdir = 1;
+
         return 0;
 }
 
@@ -3953,6 +3956,9 @@ opendir_ok:
         FH_SETTYPE(fi->fh, IO_TYPE_DIR);
         FH_SETDP(fi->fh, dp);
         FH_SETPATH(fi->fh, strdup(path));
+
+        /* Enable kernel readdir caching (archives are immutable) */
+        fi->cache_readdir = 1;
 
         return 0;
 }
@@ -4957,11 +4963,25 @@ static void *rar2_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
         ENTER_();
 
         pthread_t t;
-        (void)conn;             /* touch */
 
         /* Enable nullpath_ok for FUSE3 */
         if (cfg)
                 cfg->nullpath_ok = 1;
+
+        /* Configure I/O buffer sizes for improved performance */
+        if (conn) {
+                /* Note: max_read is read-only in FUSE3, controlled by kernel */
+                /* Set max_write for larger write buffers */
+                if (conn->max_write < 1024 * 1024)
+                        conn->max_write = 1024 * 1024;  /* 1MB write buffer */
+
+                conn->max_readahead = 512 * 1024;  /* 512KB readahead */
+
+                /* Enable FUSE3 performance capabilities */
+                conn->want |= FUSE_CAP_ASYNC_READ;       /* Async reads */
+                conn->want |= FUSE_CAP_SPLICE_READ;      /* Zero-copy to app */
+                conn->want |= FUSE_CAP_PARALLEL_DIROPS;  /* Parallel dir ops */
+        }
 
         filecache_init();
         dircache_init(&dircache_cb);
