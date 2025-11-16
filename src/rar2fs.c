@@ -37,6 +37,7 @@
 #include <errno.h>
 #include <libgen.h>
 #include <fuse.h>
+#include <fuse_lowlevel.h>
 #include <fcntl.h>
 #include <getopt.h>
 #include <syslog.h>
@@ -3697,11 +3698,12 @@ static int syncrar(const char *path)
  *****************************************************************************
  *
  ****************************************************************************/
-static int rar2_getattr(const char *path, struct stat *stbuf)
+static int rar2_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
         ENTER_("%s", path);
 
         struct filecache_entry *entry_p;
+        (void)fi;               /* touch */
 
         pthread_rwlock_rdlock(&file_access_lock);
         entry_p = path_lookup(path, stbuf);
@@ -3783,11 +3785,12 @@ static int rar2_getattr(const char *path, struct stat *stbuf)
  *****************************************************************************
  *
  ****************************************************************************/
-static int rar2_getattr2(const char *path, struct stat *stbuf)
+static int rar2_getattr2(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
         ENTER_("%s", path);
 
         int res;
+        (void)fi;               /* touch */
 
         pthread_rwlock_rdlock(&file_access_lock);
         if (path_lookup(path, stbuf)) {
@@ -3852,7 +3855,7 @@ static int rar2_getattr2(const char *path, struct stat *stbuf)
  *
  ****************************************************************************/
 static void dump_dir_list(const char *path, void *buffer, fuse_fill_dir_t filler,
-                struct dir_entry_list *next)
+                struct dir_entry_list *next, enum fuse_readdir_flags flags)
 {
         ENTER_("%s", path);
 
@@ -3862,6 +3865,7 @@ static void dump_dir_list(const char *path, void *buffer, fuse_fill_dir_t filler
 #else
         (void)path;
 #endif
+        (void)flags;            /* touch */
 
         next = next->next;
         while (next) {
@@ -3873,7 +3877,7 @@ static void dump_dir_list(const char *path, void *buffer, fuse_fill_dir_t filler
                  * the directory cache is currently in effect.
                  */
                 if (next->entry.valid) {
-                        filler(buffer, next->entry.name, next->entry.st, 0);
+                        filler(buffer, next->entry.name, next->entry.st, 0, FUSE_FILL_DIR_PLUS);
 /* TODO: If/when folder cache becomes optional this needs to be revisted */
 #if 0
                         if (next->entry.type == DIR_E_RAR)
@@ -3958,7 +3962,7 @@ opendir_ok:
  *
  ****************************************************************************/
 static int rar2_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
-                off_t offset, struct fuse_file_info *fi)
+                off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags)
 {
         ENTER_("%s", (path ? path : ""));
 
@@ -4045,8 +4049,8 @@ static int rar2_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
 dump_buff:
 
         if (dp == NULL) {
-                filler(buffer, ".", NULL, 0);
-                filler(buffer, "..", NULL, 0);
+                filler(buffer, ".", NULL, 0, FUSE_FILL_DIR_PLUS);
+                filler(buffer, "..", NULL, 0, FUSE_FILL_DIR_PLUS);
         }
 
         (void)dir_list_append(&dir_list, dir_list2);
@@ -4064,7 +4068,7 @@ dump_buff:
                 free(dir_list2);
         }
 
-        dump_dir_list(path, buffer, filler, &dir_list);
+        dump_dir_list(path, buffer, filler, &dir_list, flags);
         dir_list_free(&dir_list);
 
         return ret;
@@ -4074,7 +4078,7 @@ dump_buff_nocache:
         (void)dir_list_append(&dir_list, dir_list2);
         dir_list_close(&dir_list);
 
-        dump_dir_list(path, buffer, filler, &dir_list);
+        dump_dir_list(path, buffer, filler, &dir_list, flags);
         dir_list_free(&dir_list);
         dir_list_free(dir_list2);
         free(dir_list2);
@@ -4088,11 +4092,12 @@ dump_buff_nocache:
  ****************************************************************************/
 static int rar2_readdir2(const char *path, void *buffer,
                 fuse_fill_dir_t filler, off_t offset,
-                struct fuse_file_info *fi)
+                struct fuse_file_info *fi, enum fuse_readdir_flags flags)
 {
         ENTER_("%s", (path ? path : ""));
 
         (void)offset;           /* touch */
+        (void)flags;            /* touch */
 
         struct dir_entry_list *dir_list; /* internal list root */
 
@@ -4134,11 +4139,11 @@ static int rar2_readdir2(const char *path, void *buffer,
                 pthread_rwlock_unlock(&dir_access_lock);
         }
 
-        filler(buffer, ".", NULL, 0);
-        filler(buffer, "..", NULL, 0);
+        filler(buffer, ".", NULL, 0, FUSE_FILL_DIR_PLUS);
+        filler(buffer, "..", NULL, 0, FUSE_FILL_DIR_PLUS);
 
         dir_list_close(dir_list);
-        dump_dir_list(FH_TOPATH(fi->fh), buffer, filler, dir_list);
+        dump_dir_list(FH_TOPATH(fi->fh), buffer, filler, dir_list, flags);
 
         if (!entry_p) {
                 pthread_rwlock_wrlock(&dir_access_lock);
@@ -4947,12 +4952,16 @@ static struct dircache_cb dircache_cb = {
  *****************************************************************************
  *
  ****************************************************************************/
-static void *rar2_init(struct fuse_conn_info *conn)
+static void *rar2_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
         ENTER_();
 
         pthread_t t;
         (void)conn;             /* touch */
+
+        /* Enable nullpath_ok for FUSE3 */
+        if (cfg)
+                cfg->nullpath_ok = 1;
 
         filecache_init();
         dircache_init(&dircache_cb);
@@ -5175,9 +5184,10 @@ static int rar2_read(const char *path, char *buffer, size_t size, off_t offset,
  *****************************************************************************
  *
  ****************************************************************************/
-static int rar2_truncate(const char *path, off_t offset)
+static int rar2_truncate(const char *path, off_t offset, struct fuse_file_info *fi)
 {
         ENTER_("%s", path);
+        (void)fi;               /* touch */
         if (!access_chk(path, 0)) {
                 char *root;
                 ABS_ROOT(root, path);
@@ -5209,9 +5219,10 @@ static int rar2_write(const char *path, const char *buffer, size_t size,
  *****************************************************************************
  *
  ****************************************************************************/
-static int rar2_chmod(const char *path, mode_t mode)
+static int rar2_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
         ENTER_("%s", path);
+        (void)fi;               /* touch */
         if (!access_chk(path, 0)) {
                 char *root;
                 ABS_ROOT(root, path);
@@ -5226,9 +5237,10 @@ static int rar2_chmod(const char *path, mode_t mode)
  *****************************************************************************
  *
  ****************************************************************************/
-static int rar2_chown(const char *path, uid_t uid, gid_t gid)
+static int rar2_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
 {
         ENTER_("%s", path);
+        (void)fi;               /* touch */
         if (!access_chk(path, 0)) {
                 char *root;
                 ABS_ROOT(root, path);
@@ -5252,9 +5264,10 @@ static int rar2_eperm()
  *****************************************************************************
  *
  ****************************************************************************/
-static int rar2_rename(const char *oldpath, const char *newpath)
+static int rar2_rename(const char *oldpath, const char *newpath, unsigned int flags)
 {
         ENTER_("%s", oldpath);
+        (void)flags;            /* touch */
 
         /* We can not move things out of- or from RAR archives */
         if (!access_chk(newpath, 0) && !access_chk(oldpath, 0)) {
@@ -5350,11 +5363,12 @@ static int rar2_rmdir(const char *path)
  *****************************************************************************
  *
  ****************************************************************************/
-static int rar2_utimens(const char *path, const struct timespec ts[2])
+static int rar2_utimens(const char *path, const struct timespec ts[2], struct fuse_file_info *fi)
 {
         ENTER_("%s", path);
 
         struct stat st;
+        (void)fi;               /* touch */
 
         if (!access_chk(path, 0)) {
                 int res;
@@ -5848,12 +5862,6 @@ static struct fuse_operations rar2_operations = {
         .listxattr = rar2_listxattr,
         .removexattr = rar2_removexattr,
 #endif
-#if FUSE_MAJOR_VERSION == 2 && FUSE_MINOR_VERSION > 7
-        .flag_nullpath_ok = 1,
-#endif
-#if FUSE_MAJOR_VERSION > 2 || (FUSE_MAJOR_VERSION == 2 && FUSE_MINOR_VERSION >= 9)
-        .flag_nopath = 1,
-#endif
 };
 
 struct work_task_data {
@@ -5870,7 +5878,7 @@ struct work_task_data {
 static void *work_task(void *data)
 {
         struct work_task_data *wdt = (struct work_task_data *)data;
-        wdt->status = wdt->mt ? fuse_loop_mt(wdt->fuse) : fuse_loop(wdt->fuse);
+        wdt->status = wdt->mt ? fuse_loop_mt(wdt->fuse, 0) : fuse_loop(wdt->fuse);
         wdt->work_task_exited = 1;
         return NULL;
 }
@@ -6010,44 +6018,58 @@ static int work(struct fuse_args *args)
         }
 
         struct fuse *f = NULL;
-        struct fuse_chan *ch = NULL;
         pthread_t t;
-        char *mp;
-        int mt = 0;
-        int fg = 0;
+        int res;
+        struct fuse_cmdline_opts opts;
 
-        /* This is doing more or less the same as fuse_setup(). */
-        if (!fuse_parse_cmdline(args, &mp, &mt, &fg)) {
-              ch = fuse_mount(mp, args);
-              if (ch) {
-                      /* Avoid any output from the initial attempt */
-                      block_stdio();
-                      f = fuse_new(ch, args, &rar2_operations,
-                                        sizeof(rar2_operations), NULL);
-                      release_stdio();
-                      if (f == NULL) {
-                              /* Check if the operation might succeed the
-                               * second time after having massaged the
-                               * arguments. */
-                              (void)scan_fuse_new_args(args);
-                              f = fuse_new(ch, args, &rar2_operations,
-                                        sizeof(rar2_operations), NULL);
-                      }
-                      if (f == NULL) {
-                              fuse_unmount(mp, ch);
-                      } else {
-                              fuse_daemonize(fg);
-                              fuse_set_signal_handlers(fuse_get_session(f));
-                              syslog(LOG_DEBUG, "mounted %s", mp);
-                      }
-              }
+        /* FUSE3: Parse standard FUSE command line options.
+         * This extracts mountpoint, foreground, singlethread, etc.
+         * and removes them from args, leaving only program name
+         * and any unrecognized options for fuse_new(). */
+        memset(&opts, 0, sizeof(opts));
+        if (fuse_parse_cmdline(args, &opts) != 0) {
+                return -1;
         }
 
-        if (f == NULL)
+        /* Check that mountpoint was specified */
+        if (opts.mountpoint == NULL) {
+                fprintf(stderr, "error: no mountpoint specified\n");
                 return -1;
+        }
+
+        /* FUSE3: Create fuse handle with cleaned args */
+        block_stdio();
+        f = fuse_new(args, &rar2_operations,
+                                sizeof(rar2_operations), NULL);
+        release_stdio();
+        if (f == NULL) {
+                /* Check if the operation might succeed the
+                 * second time after having massaged the
+                 * arguments. */
+                (void)scan_fuse_new_args(args);
+                f = fuse_new(args, &rar2_operations,
+                                sizeof(rar2_operations), NULL);
+        }
+
+        if (f == NULL) {
+                free(opts.mountpoint);
+                return -1;
+        }
+
+        /* FUSE3: Mount after creating fuse handle */
+        res = fuse_mount(f, opts.mountpoint);
+        if (res != 0) {
+                fuse_destroy(f);
+                free(opts.mountpoint);
+                return -1;
+        }
+
+        fuse_daemonize(opts.foreground);
+        fuse_set_signal_handlers(fuse_get_session(f));
+        syslog(LOG_DEBUG, "mounted %s", opts.mountpoint);
 
         wdt.fuse = f;
-        wdt.mt = mt;
+        wdt.mt = !opts.singlethread;  /* mt=1 for multi-threaded, 0 for single-threaded */
         wdt.work_task_exited = 0;
         wdt.status = 0;
         pthread_create(&t, &thread_attr, work_task, (void *)&wdt);
@@ -6058,7 +6080,7 @@ static int work(struct fuse_args *args)
          * But this is really what we want since this thread should not
          * block blindly without some user control.
          */
-        while (!fuse_exited(f) && !wdt.work_task_exited) {
+        while (!fuse_session_exited(fuse_get_session(f)) && !wdt.work_task_exited) {
                 sleep(1);
                 ++rar2_ticks;
         }
@@ -6069,12 +6091,12 @@ static int work(struct fuse_args *args)
         warmup_cancelled = 1;
         pthread_join(t, NULL);
 
-        /* This is doing more or less the same as fuse_teardown(). */
+        /* FUSE3: Teardown */
         fuse_remove_signal_handlers(fuse_get_session(f));
-        fuse_unmount(mp, ch);
+        fuse_unmount(f);
         fuse_destroy(f);
-        syslog(LOG_DEBUG, "unmounted %s", mp);
-        free(mp);
+        syslog(LOG_DEBUG, "unmounted %s", opts.mountpoint);
+        free(opts.mountpoint);
 
 #if defined ( HAVE_SCHED_SETAFFINITY ) && defined ( HAVE_CPU_SET_T )
         if (OPT_SET(OPT_KEY_NO_SMP)) {
@@ -6332,7 +6354,8 @@ int main(int argc, char *argv[])
                         return -1;
         }
 
-        fuse_opt_add_arg(&args, "-osync_read,fsname=rar2fs,subtype=rar2fs");
+        /* FUSE3: Don't manually add arguments - let fuse_parse_cmdline handle them.
+         * The mountpoint is added by rar2fs_opt_proc when processing DST option. */
         if (OPT_SET(OPT_KEY_DST))
                 fuse_opt_add_arg(&args, OPT_STR(OPT_KEY_DST, 0));
 

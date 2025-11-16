@@ -253,7 +253,7 @@ if test x"$withval" != x; then
     fi
 fi
 
-FUSE_CPPFLAGS="$FUSE_CPPFLAGS -D_FILE_OFFSET_BITS=64 -DFUSE_USE_VERSION=26"
+FUSE_CPPFLAGS="$FUSE_CPPFLAGS -D_FILE_OFFSET_BITS=64 -DFUSE_USE_VERSION=31"
 UNRAR_CXXFLAGS="-DRARDLL"
 AC_SUBST(FUSE_CPPFLAGS)
 AC_SUBST(UNRAR_CPPFLAGS)
@@ -300,25 +300,24 @@ AC_CHECK_HEADER(fuse.h,,
         Cannot find fuse.h - add alternative include search path using
         --with-fuse and rerun configure.])])
 
+# Require FUSE3 via pkg-config (no FUSE2 fallback)
+PKG_CHECK_MODULES([FUSE3], [fuse3 >= 3.2.0],
+    [
+        FUSE_LIBS="$FUSE3_LIBS"
+        FUSE_CPPFLAGS="$FUSE_CPPFLAGS $FUSE3_CFLAGS"
+    ],
+    [AC_MSG_ERROR([
+        $PACKAGE requires FUSE3 (libfuse3-dev >= 3.2.0).
+        Please install libfuse3-dev and pkg-config, then rerun configure.
+        On Debian/Ubuntu: apt-get install libfuse3-dev pkg-config
+        On Fedora/RHEL: dnf install fuse3-devel pkgconfig
+    ])])
+
 save_LDFLAGS="$LDFLAGS"
 save_LIBS="$LIBS"
 LDFLAGS="$LDFLAGS $FUSE_LDFLAGS $PTHREAD_CFLAGS"
 LIBS="$PTHREAD_LIBS $LIBS"
-AC_CHECK_LIB(osxfuse_i64,fuse_new, [FUSE_LIBS="-losxfuse_i64"],
-    [ AC_CHECK_LIB(osxfuse,fuse_new, [FUSE_LIBS="-losxfuse"],
-        [ AC_CHECK_LIB(fuse_ino64,fuse_new, [FUSE_LIBS="-lfuse_ino64"],
-            [ AC_CHECK_LIB(fuse4x,fuse_new, [FUSE_LIBS="-lfuse4x"],
-                [ AC_CHECK_LIB(fuse,fuse_new, [FUSE_LIBS="-lfuse"],
-                    [ AC_CHECK_LIB(dokanfuse1.dll,fuse_new, [FUSE_LIBS="-ldokanfuse1.dll"],
-                        [AC_MSG_ERROR([
-                            Cannot find fuse library - add alternative library search path using
-                            --with-fuse-lib and rerun configure. ])
-                    ],)
-                ],)
-            ],)
-        ],)
-    ],)
-],)
+
 LIBS="$FUSE_LIBS $LIBS"
 # fuse_version() became available for the first time in fuse 2.7
 AC_CHECK_FUNCS(fuse_version)
@@ -327,23 +326,28 @@ LDFLAGS="$save_LDFLAGS"
 AC_SUBST(FUSE_LIBS)
 
 ########################################################
-# Check for a supported FUSE_MAJOR_VERSION.
+# Check for a supported FUSE_USE_VERSION.
+# Note: FUSE3 sets FUSE_MAJOR_VERSION=2, FUSE_MINOR_VERSION=9 for API compatibility
+# The correct way to detect FUSE3 is via FUSE_USE_VERSION >= 30
 AC_MSG_CHECKING([for supported FUSE API version])
 if test x"$cross_compiling" = x"no"; then
     AC_RUN_IFELSE([
         AC_LANG_PROGRAM([[
              #include <fuse.h>]],
     [[
-        if(FUSE_MAJOR_VERSION == 2 && FUSE_MINOR_VERSION >= 6)
+        #if FUSE_USE_VERSION >= 30
             return 0;
-        return -1;
+        #else
+            return -1;
+        #endif
     ]])],
-        [AC_MSG_RESULT([yes])],
+        [AC_MSG_RESULT([yes (FUSE3)])],
         [AC_MSG_RESULT([no])
         AC_MSG_FAILURE([
-    $PACKAGE requires FUSE 2.6 or newer. Please check config.log for errors.
-    If you cannot determine the problem, mail the author of the package
-    and include the config.log file])
+    $PACKAGE requires FUSE3 (>= 3.2.0). Please check config.log for errors.
+    Install libfuse3-dev and rerun configure.
+    On Debian/Ubuntu: apt-get install libfuse3-dev
+    On Fedora/RHEL: dnf install fuse3-devel])
         ]
     )
 else
