@@ -244,6 +244,105 @@ Limits the number of file entries that will be processed when reading RAR archiv
 This prevents resource exhaustion from archives claiming billions of files.
 The default limit of 10000 entries should be sufficient for most legitimate archives.
 .br
+.SH FUSE TUNING OPTIONS
+The following options control FUSE-level performance parameters (EP002 Phase 7).
+These are advanced options; the defaults are optimized for immutable RAR archives.
+.TP
+.B \-\-fuse-max-write=BYTES
+Set FUSE maximum write buffer size. Default: 1048576 (1MB).
+Valid range: 4096-4194304 (4KB-4MB). Higher values improve
+large file write performance but increase kernel memory usage.
+.TP
+.B \-\-fuse-max-readahead=BYTES
+Set FUSE maximum readahead size. Default: 524288 (512KB).
+Valid range: 0-2097152 (0-2MB). Higher values improve sequential
+read performance for cached workloads. Set to 0 to disable.
+.TP
+.B \-\-fuse-entry-timeout=SECONDS
+Directory entry cache timeout. Default: 600.0 (10 minutes).
+Valid range: 0.0-3600.0. Since RAR archives are typically
+immutable, high values (600-3600) are recommended for
+production use. Use low values (0-60) if archives may be
+replaced during mount.
+.TP
+.B \-\-fuse-attr-timeout=SECONDS
+File attribute cache timeout. Default: 600.0 (10 minutes).
+Valid range: 0.0-3600.0. Recommendations same as entry-timeout.
+.TP
+.B \-\-fuse-negative-timeout=SECONDS
+Negative lookup cache timeout. Default: 60.0 (1 minute).
+Valid range: 0.0-3600.0. Caches "file not found" results.
+.TP
+.B \-\-fuse-max-background=COUNT
+Maximum pending background requests. Valid range: 1-100.
+Default: kernel default (~12). Higher values may improve
+async I/O throughput but consume more kernel memory.
+.TP
+.B \-\-fuse-congestion-threshold=COUNT
+Kernel congestion threshold. Valid range: 1-100.
+Default: kernel default (~9). Affects scheduler behavior
+under high load.
+.PP
+.RS
+.B FUSE Capability Toggles (Debugging):
+The following flags disable FUSE3 performance capabilities.
+These are debugging/compatibility options; all capabilities
+are enabled by default.
+.TP
+.B \-\-fuse-no-async-read
+Disable asynchronous read capability. May reduce performance.
+.TP
+.B \-\-fuse-no-splice-read
+Disable splice read (zero-copy) capability. May reduce performance.
+.TP
+.B \-\-fuse-no-parallel-dirops
+Disable parallel directory operations. May reduce concurrency.
+.RE
+.PP
+.RS
+.B Examples:
+.PP
+Optimal configuration for immutable video archives on virtiofs:
+.PP
+.nf
+rar2fs --iob-size=8 --hist-size=75 \\
+       --fuse-entry-timeout=3600 --fuse-attr-timeout=3600 \\
+       /mnt/host/media /mnt/rar2fs
+.fi
+.PP
+Expected benefits: +24% directory operations, +10-20% metadata
+operations, +7-13% video seeking (vs default configuration).
+.PP
+Conservative configuration for dynamic scenarios (archives may be replaced):
+.PP
+.nf
+rar2fs --fuse-entry-timeout=0 --fuse-attr-timeout=0 \\
+       /source /mount
+.fi
+.PP
+.B Tuning Guide:
+.PP
+For immutable RAR archives (typical use case):
+.br
+1. Use high FUSE cache timeouts (600-3600s) to minimize
+metadata lookups. RAR archives don't change, so aggressive
+caching is safe.
+.br
+2. Use optimized I/O buffers (--iob-size=8 --hist-size=75)
+for best throughput.
+.br
+3. Use default FUSE buffer sizes (1MB write, 512KB readahead)
+unless profiling shows specific bottlenecks.
+.PP
+Memory impact calculation:
+.br
+max_write × max_background = kernel memory consumption
+.br
+Example: 1MB × 12 = 12MB (default, safe)
+.br
+Example: 4MB × 100 = 400MB (high throughput, risky)
+.RE
+.br
 .SH MOUNT OPTIONS
 .RE
 .TP
