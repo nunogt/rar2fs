@@ -5323,11 +5323,10 @@ static off_t rar2_lseek(const char *path, off_t off, int whence,
                 break;
 
         case SEEK_CUR:
-                /* Relative to current position - FUSE doesn't track position,
-                 * so we can't support this properly. Return the requested offset
-                 * as apps typically use this with offset=0 to query position */
-                new_offset = off;
-                break;
+                /* FUSE doesn't track file position per handle, so we cannot
+                 * correctly implement relative seeks. Return not supported and
+                 * let the kernel's VFS layer handle position tracking. */
+                return -EOPNOTSUPP;
 
         case SEEK_END:
                 /* Relative to end of file */
@@ -6228,9 +6227,23 @@ static int work(struct fuse_args *args)
          * and removes them from args, leaving only program name
          * and any unrecognized options for fuse_new(). */
         memset(&opts, 0, sizeof(opts));
+
+        /* EP004 DEBUG: Log args before fuse_parse_cmdline */
+        fprintf(stderr, "DEBUG: Before fuse_parse_cmdline: argc=%d\n", args->argc);
+        for (int i = 0; i < args->argc; i++) {
+                fprintf(stderr, "DEBUG:   argv[%d] = '%s'\n", i, args->argv[i]);
+        }
+
         if (fuse_parse_cmdline(args, &opts) != 0) {
                 return -1;
         }
+
+        /* EP004 DEBUG: Log args after fuse_parse_cmdline */
+        fprintf(stderr, "DEBUG: After fuse_parse_cmdline: argc=%d\n", args->argc);
+        for (int i = 0; i < args->argc; i++) {
+                fprintf(stderr, "DEBUG:   argv[%d] = '%s'\n", i, args->argv[i]);
+        }
+        fprintf(stderr, "DEBUG: mountpoint = '%s'\n", opts.mountpoint ? opts.mountpoint : "NULL");
 
         /* Check that mountpoint was specified */
         if (opts.mountpoint == NULL) {
@@ -6238,11 +6251,40 @@ static int work(struct fuse_args *args)
                 return -1;
         }
 
-        /* FUSE3: Create fuse handle with cleaned args */
+        /* EP004 DEBUG: Log args before fuse_new */
+        fprintf(stderr, "DEBUG: Before fuse_new: argc=%d, args=%p, argv=%p\n",
+                args->argc, (void*)args, (void*)args->argv);
+        for (int i = 0; i < args->argc; i++) {
+                fprintf(stderr, "DEBUG:   argv[%d] = %p '%s'\n",
+                        i, (void*)args->argv[i], args->argv[i] ? args->argv[i] : "NULL");
+        }
+
+        /* EP004 FIX: After fuse_parse_cmdline(), args may contain unrecognized options
+         * that fuse_new() will try to parse. However, fuse_opt_parse() inside fuse_new()
+         * can remove ALL arguments including argv[0], triggering "empty argv" error.
+         *
+         * Solution: Since all rar2fs and FUSE options have been parsed by now,
+         * pass only argv[0] (program name) to fuse_new() to avoid option parsing issues.
+         * Save original args to restore if needed for scan_fuse_new_args retry.
+         */
+        struct fuse_args clean_args = FUSE_ARGS_INIT(0, NULL);
+        if (args->argc > 0 && args->argv && args->argv[0]) {
+                fuse_opt_add_arg(&clean_args, args->argv[0]);
+        } else {
+                fuse_opt_add_arg(&clean_args, "rar2fs");
+        }
+
+        fprintf(stderr, "DEBUG: Calling fuse_new with clean args: argc=%d, argv[0]='%s'\n",
+                clean_args.argc, clean_args.argv[0]);
+
+        /* FUSE3: Create fuse handle with clean args */
         block_stdio();
-        f = fuse_new(args, &rar2_operations,
+        f = fuse_new(&clean_args, &rar2_operations,
                                 sizeof(rar2_operations), NULL);
         release_stdio();
+
+        /* Free clean args - they were only for fuse_new() call */
+        fuse_opt_free_args(&clean_args);
         if (f == NULL) {
                 /* Check if the operation might succeed the
                  * second time after having massaged the
