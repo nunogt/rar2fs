@@ -3374,6 +3374,22 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                 }
 
 cache_hit:
+                /* EP004 Phase 2: Check if this is a nested RAR file */
+                if (OPT_SET(OPT_KEY_RECURSIVE) && !IS_RAR_DIR(&arc->hdr)) {
+                        /* Check if file has .rar extension (fast-path) */
+                        const char *ext = strrchr(arc->hdr.FileName, '.');
+                        if (ext && !strcasecmp(ext, ".rar")) {
+                                /* Mark as nested RAR (will be processed recursively later) */
+                                entry_p->flags.is_nested_rar = 1;
+                                printd(3, "Detected nested RAR: %s (size=%lld)\n",
+                                       arc->hdr.FileName,
+                                       (long long)arc->hdr.UnpSize);
+                                /* Note: Actual recursive unpacking and hide_from_listing
+                                 * will be implemented in Phase 2 completion.
+                                 * For now, we detect and mark nested RARs. */
+                        }
+                }
+
                 pthread_rwlock_unlock(&file_access_lock);
                 __add_filler(path, buffer, mp);
                 if (IS_RAR_DIR(&arc->hdr))
@@ -3936,9 +3952,8 @@ static void dump_dir_list(const char *path, void *buffer, fuse_fill_dir_t filler
 #if 0
         struct filecache_entry *entry_p;
         int do_inval_cache = 1;
-#else
-        (void)path;
 #endif
+        /* EP004: path is now used for hide_from_listing checks */
         (void)flags;            /* touch */
 
         next = next->next;
@@ -3951,6 +3966,19 @@ static void dump_dir_list(const char *path, void *buffer, fuse_fill_dir_t filler
                  * the directory cache is currently in effect.
                  */
                 if (next->entry.valid) {
+                        /* EP004 Phase 2: Filter hidden entries (nested RARs) */
+                        if (next->entry.type == DIR_E_RAR) {
+                                char *full_path;
+                                ABS_MP2(full_path, path, next->entry.name);
+                                struct filecache_entry *cache_entry = filecache_get(full_path);
+                                if (cache_entry && cache_entry->hide_from_listing) {
+                                        printd(4, "Filtering hidden entry: %s\n", next->entry.name);
+                                        free(full_path);
+                                        next = next->next;
+                                        continue;
+                                }
+                                free(full_path);
+                        }
                         filler(buffer, next->entry.name, next->entry.st, 0, FUSE_FILL_DIR_PLUS);
 /* TODO: If/when folder cache becomes optional this needs to be revisted */
 #if 0
