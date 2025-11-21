@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2025 EP004 Implementation
+    Copyright (C) 2025 Nuno <nunogt@gmail.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,7 +16,7 @@
 */
 
 /**
- * EP004 Phase 2: Recursive RAR Archive Unpacking
+ * Recursive unpacking: Recursive RAR Archive Unpacking
  *
  * This module implements security-critical functions for nested RAR handling:
  * - Cycle detection via FNV-1a fingerprinting (prevents A→B→A loops)

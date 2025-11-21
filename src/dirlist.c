@@ -144,12 +144,12 @@ struct dir_entry_list *dir_entry_add(struct dir_entry_list *l, const char *key,
                 struct stat *st, int type)
 {
         struct dir_entry_list *tmp;
-        struct dir_entry_list *head = NULL;  /* EP004: Track head for NULL list case */
+        struct dir_entry_list *head = NULL;  /*  Track head for NULL list case */
         uint32_t hash;
 
         hash = get_hash(key, 0);
 
-        /* EP004: Handle NULL list by creating new head (needed for recursive extraction) */
+        /*  Handle NULL list by creating new head (needed for recursive extraction) */
         if (!l) {
                 l = malloc(sizeof(struct dir_entry_list));
                 if (!l) {
@@ -158,7 +158,7 @@ struct dir_entry_list *dir_entry_add(struct dir_entry_list *l, const char *key,
                 }
                 l->entry.head_flag = DIR_LIST_HEAD_;
                 l->next = NULL;
-                /* EP004 FIX: Save head pointer to return after creating first entry */
+                /* FIX: Save head pointer to return after creating first entry */
                 head = l;
                 goto new_with_head;
         }
@@ -196,7 +196,7 @@ new:
         return l;
 
 new_with_head:
-        /* EP004 FIX: Create first entry when head was just created */
+        /* FIX: Create first entry when head was just created */
         l->next = malloc(sizeof(struct dir_entry_list));
         if (!l->next) {
                 printd(1, "dir_entry_add: malloc failed for first entry\n");

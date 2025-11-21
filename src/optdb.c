@@ -55,7 +55,7 @@ static struct opt_entry opt_entry_[] = {
         {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_OPERATION_TIMEOUT */
         {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_MAX_VOLUME_COUNT */
         {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_MAX_ARCHIVE_ENTRIES */
-        /* FUSE mount options (EP002 Phase 7) */
+        /* FUSE mount options (FUSE tuning options) */
         {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_FUSE_MAX_WRITE (integer) */
         {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_FUSE_MAX_READAHEAD (integer) */
         {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_FUSE_MAX_BACKGROUND (integer) */
@@ -66,7 +66,7 @@ static struct opt_entry opt_entry_[] = {
         {{NULL,}, 0, 0, 0, 0, 0},  /* OPT_KEY_FUSE_NO_ASYNC_READ (flag) */
         {{NULL,}, 0, 0, 0, 0, 0},  /* OPT_KEY_FUSE_NO_SPLICE_READ (flag) */
         {{NULL,}, 0, 0, 0, 0, 0},  /* OPT_KEY_FUSE_NO_PARALLEL_DIROPS (flag) */
-        /* EP004 Phase 1: Recursive RAR unpacking options */
+        /* Recursive unpacking: Recursive RAR unpacking options */
         {{NULL,}, 0, 0, 0, 0, 0},  /* OPT_KEY_RECURSIVE (flag) */
         {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_RECURSION_DEPTH (integer) */
         {{NULL,}, 0, 0, 0, 0, 1}   /* OPT_KEY_MAX_UNPACK_SIZE (integer) */
@@ -170,8 +170,8 @@ int optdb_save(int opt, const char *s)
         case OPT_KEY_FUSE_MAX_READAHEAD:
         case OPT_KEY_FUSE_MAX_BACKGROUND:
         case OPT_KEY_FUSE_CONGESTION_THRESHOLD:
-        case OPT_KEY_RECURSION_DEPTH:       /* EP004: integer 1-10 */
-        case OPT_KEY_MAX_UNPACK_SIZE:       /* EP004: integer bytes */
+        case OPT_KEY_RECURSION_DEPTH:       /*  integer 1-10 */
+        case OPT_KEY_MAX_UNPACK_SIZE:       /*  integer bytes */
         {
                 NO_UNUSED_RESULT strtoul(s1, &endptr, 10);
                 if (*endptr)
@@ -186,7 +186,7 @@ int optdb_save(int opt, const char *s)
         case OPT_KEY_FUSE_NO_ASYNC_READ:
         case OPT_KEY_FUSE_NO_SPLICE_READ:
         case OPT_KEY_FUSE_NO_PARALLEL_DIROPS:
-        case OPT_KEY_RECURSIVE:              /* EP004: flag */
+        case OPT_KEY_RECURSIVE:              /*  flag */
                 /* Store as string for timeout doubles, or as flag for capabilities */
                 CLR_OPT_(opt);
                 ADD_OPT_(opt, s1, OPT_STR_);

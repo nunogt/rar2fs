@@ -59,9 +59,9 @@ struct filecache_entry {
                         unsigned int vsize_fixup_needed:1;
                         unsigned int encrypted:1;
                         unsigned int vsize_resolved:1;
-                        unsigned int :19;                /* EP004: Reduced from 21 to 19 */
-                        unsigned int detection_deferred:1; /* EP004: Lazy RAR detection flag */
-                        unsigned int is_nested_rar:1;      /* EP004: Is this a nested RAR archive? */
+                        unsigned int :19;                /*  Reduced from 21 to 19 */
+                        unsigned int detection_deferred:1; /*  Lazy RAR detection flag */
+                        unsigned int is_nested_rar:1;      /*  Is this a nested RAR archive? */
                         unsigned int unresolved:1;
                         unsigned int dry_run_done:1;
                         unsigned int check_atime:1;
@@ -75,9 +75,9 @@ struct filecache_entry {
                         unsigned int check_atime:1;
                         unsigned int dry_run_done:1;
                         unsigned int unresolved:1;
-                        unsigned int is_nested_rar:1;      /* EP004: Is this a nested RAR archive? */
-                        unsigned int detection_deferred:1; /* EP004: Lazy RAR detection flag */
-                        unsigned int :19;                /* EP004: Reduced from 21 to 19 */
+                        unsigned int is_nested_rar:1;      /*  Is this a nested RAR archive? */
+                        unsigned int detection_deferred:1; /*  Lazy RAR detection flag */
+                        unsigned int :19;                /*  Reduced from 21 to 19 */
                         unsigned int vsize_resolved:1;
                         unsigned int encrypted:1;
                         unsigned int vsize_fixup_needed:1;
@@ -88,7 +88,7 @@ struct filecache_entry {
                 } flags;
                 uint32_t flags_uint32;
         };
-        /* EP004 Phase 0.5: Nested archive metadata (+8 bytes per entry)
+        /* Recursive unpacking: Nested archive metadata (+8 bytes per entry)
          * These fields support recursive RAR unpacking with transparent flat design.
          * All fields are NULL/0 for non-nested files (backward compatible).
          */

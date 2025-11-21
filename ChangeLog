@@ -4,7 +4,7 @@ rar2fs ChangeLog file.
 
         * Release v2.0.0 (BREAKING CHANGE: FUSE3 required)
 
-        * Add 10 FUSE-level tuning options for production optimization (EP002 Phase 7)
+        * Add 10 FUSE-level tuning options for production optimization (FUSE tuning options)
           - Connection options: --fuse-max-write, --fuse-max-readahead,
             --fuse-max-background, --fuse-congestion-threshold
           - Timeout options: --fuse-entry-timeout, --fuse-attr-timeout,

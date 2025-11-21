@@ -556,7 +556,7 @@ static inline int is_nnn_vol(const char *name)
 
 /*!
  *****************************************************************************
- * EP004 Phase 1: Enhanced RAR detection with magic byte validation
+ * Recursive unpacking: Enhanced RAR detection with magic byte validation
  *
  * Check if a file is a valid RAR archive by verifying magic bytes.
  * Supports both RAR4 and RAR5 format signatures.
@@ -591,7 +591,7 @@ static int is_rar_magic(const char *rar_path, const char *file_path)
         }
 
         /*
-         * TODO EP004 Phase 2: Extract magic bytes from file within RAR
+         * TODO Recursive unpacking: Extract magic bytes from file within RAR
          * For now, rely on extension check only.
          * Full implementation requires:
          * 1. Open rar_path archive with RAROpenArchiveEx()
@@ -612,15 +612,15 @@ static int is_rar_magic(const char *rar_path, const char *file_path)
         };
 
         /*
-         * Phase 1 Stub: Return true if extension is .rar
+         * Stub implementation: Return true if extension is .rar
          * This maintains backward compatibility while preparing
-         * for Phase 2 full magic byte validation.
+         * for full magic byte validation.
          */
         printd(3, "is_rar_magic: stub returning true for .rar extension: %s\n",
                file_path);
         return 1;
 
-        /* Unreachable code - will be activated in Phase 2 */
+        /* Unreachable code - will be activated when full magic byte validation is implemented */
         (void)magic;
         (void)rar4_sig;
         (void)rar5_sig;
@@ -3139,7 +3139,7 @@ static void __listrar_cachedirentry(const char *mp)
 
 /*!
  *****************************************************************************
- * EP004 Phase 2B: Nested RAR Extraction Helper Functions
+ * Recursive unpacking: Nested RAR Extraction Helper Functions
  *****************************************************************************
  */
 
@@ -3230,7 +3230,7 @@ static int CALLBACK extract_nested_callback(UINT msg, LPARAM UserData,
  * Extract nested RAR file to memory buffer.
  * Uses UnRAR RARProcessFile with UCM_PROCESSDATA callback.
  *
- * FIX (EP004 Phase 2B.2): The issue was that we called RARSetCallback on an
+ * FIX: The issue was that we called RARSetCallback on an
  * already-open archive handle. The handle was opened with list_callback_noswitch
  * and RARSetCallback doesn't properly override this. Solution: Re-open the archive
  * with the extraction callback set BEFORE opening.
@@ -3498,7 +3498,7 @@ static struct dir_entry_list* process_nested_rar(const char *parent_archive_path
 static int listrar(const char *path, struct dir_entry_list **buffer,
                 const char *arch, char **first_arch, int *final)
 {
-        /* EP004: Initialize recursion context for top-level calls when recursive mode enabled */
+        /*  Initialize recursion context for top-level calls when recursive mode enabled */
         struct recursion_context local_ctx;
         struct recursion_context *ctx = NULL;
 
@@ -3521,7 +3521,7 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
 
 /*!
  *****************************************************************************
- * Internal listrar with recursion context support (EP004 Phase 2B)
+ * Internal listrar with recursion context support
  ****************************************************************************/
 static int listrar_internal(const char *path, struct dir_entry_list **buffer,
                 const char *arch, char **first_arch, int *final,
@@ -3589,7 +3589,7 @@ static int listrar_internal(const char *path, struct dir_entry_list **buffer,
                 return -ENOMEM;
         }
 
-        /* EP004 Phase 2B.2: For tmpfiles (recursive extraction), use path directly
+        /* Recursive unpacking: For tmpfiles (recursive extraction), use path directly
          * as rar_root instead of computing from archive path. Tmpfiles are in /tmp
          * and don't have meaningful directory structure relative to source. */
         char *rar_root;
@@ -3670,7 +3670,7 @@ static int listrar_internal(const char *path, struct dir_entry_list **buffer,
 
                 DOS_TO_UNIX_PATH(arc->hdr.FileName);
 
-                /* EP004 Phase 3: Security - Sanitize nested archive paths */
+                /* Recursive unpacking: Security - Sanitize nested archive paths */
                 if (ctx && ctx->depth > 0) {
                         /* We're processing a nested archive - validate path security */
                         char *sanitized = sanitize_nested_path(arc->hdr.FileName);
@@ -3810,7 +3810,7 @@ static int listrar_internal(const char *path, struct dir_entry_list **buffer,
                 }
 
 cache_hit:
-                /* EP004 Phase 2B: Process nested RAR files recursively */
+                /* Recursive unpacking: Process nested RAR files recursively */
                 if (ctx && !IS_RAR_DIR(&arc->hdr)) {
                         /* Check if file has .rar extension (fast-path) */
                         const char *ext = strrchr(arc->hdr.FileName, '.');
@@ -3835,7 +3835,7 @@ cache_hit:
                                                   "(hiding from listing)\n",
                                                arc->hdr.FileName);
 
-                                        /* EP004 Phase 2B.3: Merge nested buffer into parent buffer */
+                                        /* Recursive unpacking: Merge nested buffer into parent buffer */
                                         if (buffer && *buffer && nested_buffer->next) {
                                                 printd(2, "====> Merging nested buffer into parent buffer\n");
                                                 struct dir_entry_list *merge_result =
@@ -4436,7 +4436,7 @@ static void dump_dir_list(const char *path, void *buffer, fuse_fill_dir_t filler
         struct filecache_entry *entry_p;
         int do_inval_cache = 1;
 #endif
-        /* EP004: path is now used for hide_from_listing checks */
+        /*  path is now used for hide_from_listing checks */
         (void)flags;            /* touch */
 
         next = next->next;
@@ -4449,7 +4449,7 @@ static void dump_dir_list(const char *path, void *buffer, fuse_fill_dir_t filler
                  * the directory cache is currently in effect.
                  */
                 if (next->entry.valid) {
-                        /* EP004 Phase 2: Filter hidden entries (nested RARs) */
+                        /* Recursive unpacking: Filter hidden entries (nested RARs) */
                         if (next->entry.type == DIR_E_RAR) {
                                 char *full_path;
                                 ABS_MP2(full_path, path, next->entry.name);
@@ -5549,7 +5549,7 @@ static void *rar2_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 
         pthread_t t;
 
-        /* Configure FUSE3 settings (EP002 Phase 7) */
+        /* Configure FUSE3 settings (FUSE tuning options) */
         if (cfg) {
                 /* Always enable nullpath_ok for FUSE3 */
                 cfg->nullpath_ok = 1;
@@ -6812,7 +6812,7 @@ static int work(struct fuse_args *args)
          * and any unrecognized options for fuse_new(). */
         memset(&opts, 0, sizeof(opts));
 
-        /* EP004 DEBUG: Log args before fuse_parse_cmdline */
+        /* DEBUG: Log args before fuse_parse_cmdline */
         fprintf(stderr, "DEBUG: Before fuse_parse_cmdline: argc=%d\n", args->argc);
         for (int i = 0; i < args->argc; i++) {
                 fprintf(stderr, "DEBUG:   argv[%d] = '%s'\n", i, args->argv[i]);
@@ -6822,7 +6822,7 @@ static int work(struct fuse_args *args)
                 return -1;
         }
 
-        /* EP004 DEBUG: Log args after fuse_parse_cmdline */
+        /* DEBUG: Log args after fuse_parse_cmdline */
         fprintf(stderr, "DEBUG: After fuse_parse_cmdline: argc=%d\n", args->argc);
         for (int i = 0; i < args->argc; i++) {
                 fprintf(stderr, "DEBUG:   argv[%d] = '%s'\n", i, args->argv[i]);
@@ -6835,7 +6835,7 @@ static int work(struct fuse_args *args)
                 return -1;
         }
 
-        /* EP004 DEBUG: Log args before fuse_new */
+        /* DEBUG: Log args before fuse_new */
         fprintf(stderr, "DEBUG: Before fuse_new: argc=%d, args=%p, argv=%p\n",
                 args->argc, (void*)args, (void*)args->argv);
         for (int i = 0; i < args->argc; i++) {
@@ -6843,7 +6843,7 @@ static int work(struct fuse_args *args)
                         i, (void*)args->argv[i], args->argv[i] ? args->argv[i] : "NULL");
         }
 
-        /* EP004 FIX: After fuse_parse_cmdline(), args may contain unrecognized options
+        /* FIX: After fuse_parse_cmdline(), args may contain unrecognized options
          * that fuse_new() will try to parse. However, fuse_opt_parse() inside fuse_new()
          * can remove ALL arguments including argv[0], triggering "empty argv" error.
          *
@@ -7000,7 +7000,7 @@ enum {
 
 /*!
  *****************************************************************************
- * Validate FUSE option values with comprehensive security checks (EP002 Phase 7)
+ * Validate FUSE option values with comprehensive security checks (FUSE tuning options)
  ****************************************************************************/
 static int validate_fuse_option(int opt_key, const char *arg)
 {
@@ -7140,7 +7140,7 @@ static int validate_fuse_option(int opt_key, const char *arg)
         case OPT_KEY_FUSE_NO_PARALLEL_DIROPS:
                 return 0;
 
-        /* EP004 Phase 1: Recursive RAR unpacking options validation */
+        /* Recursive unpacking: Recursive RAR unpacking options validation */
         case OPT_KEY_RECURSIVE:
                 /* Flag option - no validation needed */
                 return 0;
@@ -7213,7 +7213,7 @@ static struct option longopts[] = {
         {"operation-timeout", required_argument, NULL, OPT_ADDR(OPT_KEY_OPERATION_TIMEOUT)},
         {"max-volume-count", required_argument, NULL, OPT_ADDR(OPT_KEY_MAX_VOLUME_COUNT)},
         {"max-archive-entries", required_argument, NULL, OPT_ADDR(OPT_KEY_MAX_ARCHIVE_ENTRIES)},
-        /* FUSE tuning options (EP002 Phase 7) */
+        /* FUSE tuning options (FUSE tuning options) */
         {"fuse-max-write", required_argument, NULL, OPT_ADDR(OPT_KEY_FUSE_MAX_WRITE)},
         {"fuse-max-readahead", required_argument, NULL, OPT_ADDR(OPT_KEY_FUSE_MAX_READAHEAD)},
         {"fuse-max-background", required_argument, NULL, OPT_ADDR(OPT_KEY_FUSE_MAX_BACKGROUND)},
@@ -7225,7 +7225,7 @@ static struct option longopts[] = {
         {"fuse-no-async-read", no_argument, NULL, OPT_ADDR(OPT_KEY_FUSE_NO_ASYNC_READ)},
         {"fuse-no-splice-read", no_argument, NULL, OPT_ADDR(OPT_KEY_FUSE_NO_SPLICE_READ)},
         {"fuse-no-parallel-dirops", no_argument, NULL, OPT_ADDR(OPT_KEY_FUSE_NO_PARALLEL_DIROPS)},
-        /* EP004 Phase 1: Recursive RAR unpacking options */
+        /* Recursive unpacking: Recursive RAR unpacking options */
         {"recursive", no_argument, NULL, OPT_ADDR(OPT_KEY_RECURSIVE)},
         {"recursion-depth", required_argument, NULL, OPT_ADDR(OPT_KEY_RECURSION_DEPTH)},
         {"max-unpack-size", required_argument, NULL, OPT_ADDR(OPT_KEY_MAX_UNPACK_SIZE)},
@@ -7267,8 +7267,8 @@ static int rar2fs_opt_proc(void *data, const char *arg, int key,
                         return -1;
                 if (opt >= OPT_ADDR(0)) {
                         int opt_id = OPT_ID(opt);
-                        /* Validate FUSE options before saving (EP002 Phase 7) */
-                        /* Validate EP004 recursive unpacking options (EP004 Phase 1) */
+                        /* Validate FUSE options before saving (FUSE tuning options) */
+                        /* Validate recursive unpacking options */
                         if ((opt_id >= OPT_KEY_FUSE_MAX_WRITE && opt_id <= OPT_KEY_FUSE_NO_PARALLEL_DIROPS) ||
                             (opt_id >= OPT_KEY_RECURSIVE && opt_id <= OPT_KEY_MAX_UNPACK_SIZE)) {
                                 if (validate_fuse_option(opt_id, optarg ? optarg : "1") < 0)

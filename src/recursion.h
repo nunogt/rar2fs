@@ -1,5 +1,5 @@
 /*
-    Copyright (C) 2025 EP004 Implementation
+    Copyright (C) 2025 Nuno <nunogt@gmail.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -23,7 +23,7 @@
 #include <stdint.h>
 #include <time.h>
 
-/* EP004 Phase 2: Recursive RAR Unpacking */
+/* Recursive unpacking: Recursive RAR Unpacking */
 
 /* Maximum recursion depth (absolute security limit) */
 #define MAX_RECURSION_DEPTH 10

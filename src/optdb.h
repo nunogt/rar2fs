@@ -55,7 +55,7 @@ enum {
         OPT_KEY_OPERATION_TIMEOUT,   /* UnRAR operation timeout (seconds) */
         OPT_KEY_MAX_VOLUME_COUNT,    /* Maximum volumes to process */
         OPT_KEY_MAX_ARCHIVE_ENTRIES, /* Maximum archive entries to process */
-        /* FUSE mount options (EP002 Phase 7) */
+        /* FUSE mount options (FUSE tuning options) */
         OPT_KEY_FUSE_MAX_WRITE,             /* FUSE max write buffer size */
         OPT_KEY_FUSE_MAX_READAHEAD,         /* FUSE max readahead size */
         OPT_KEY_FUSE_MAX_BACKGROUND,        /* FUSE max background requests */
@@ -66,7 +66,7 @@ enum {
         OPT_KEY_FUSE_NO_ASYNC_READ,         /* Disable FUSE_CAP_ASYNC_READ */
         OPT_KEY_FUSE_NO_SPLICE_READ,        /* Disable FUSE_CAP_SPLICE_READ */
         OPT_KEY_FUSE_NO_PARALLEL_DIROPS,    /* Disable FUSE_CAP_PARALLEL_DIROPS */
-        /* EP004 Phase 1: Recursive RAR unpacking options */
+        /* Recursive unpacking: Recursive RAR unpacking options */
         OPT_KEY_RECURSIVE,                  /* Enable recursive RAR unpacking (flag) */
         OPT_KEY_RECURSION_DEPTH,            /* Maximum recursion depth (integer 1-10) */
         OPT_KEY_MAX_UNPACK_SIZE,            /* Maximum uncompressed size for nested archives (integer bytes) */

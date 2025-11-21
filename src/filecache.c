@@ -51,7 +51,7 @@ pthread_rwlock_t file_access_lock;
                 (e)->link_target_p = NULL;\
                 (e)->rar_p = NULL;\
                 (e)->file_p = NULL;\
-                /* EP004 Phase 0.5: Free nested metadata fields */ \
+                /* Recursive unpacking: Free nested metadata fields */ \
                 free((e)->parent_rar_p);\
                 (e)->parent_rar_p = NULL;\
         } while(0)
@@ -134,7 +134,7 @@ struct filecache_entry *filecache_clone(const struct filecache_entry *src)
                         dest->file_p = strdup(src->file_p);
                 if (src->link_target_p)
                         dest->link_target_p = strdup(src->link_target_p);
-                /* EP004 Phase 0.5: Clone nested metadata fields */
+                /* Recursive unpacking: Clone nested metadata fields */
                 if (src->parent_rar_p)
                         dest->parent_rar_p = strdup(src->parent_rar_p);
                 if (errno != 0) {
@@ -208,7 +208,7 @@ int filecache_copy(const struct filecache_entry *src,
         CP_ENTRY_F(method);
         CP_ENTRY_F(flags_uint32);
 
-        /* EP004 Phase 0.5: Copy nested metadata fields (string fields already handled above) */
+        /* Recursive unpacking: Copy nested metadata fields (string fields already handled above) */
         CP_ENTRY_F(nested_depth);
         CP_ENTRY_F(hide_from_listing);
 
