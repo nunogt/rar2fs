@@ -16,6 +16,24 @@ If security is critical, consider using filesystem-level encryption (e.g., encfs
 in combination with rar2fs.
 
 
+FEATURES
+
+- Transparent read-only access to RAR archive contents
+- Support for both compressed (RAR) and uncompressed (store) archives
+- Multi-volume RAR archive support (.r00, .r01, etc.)
+- Recursive unpacking of nested RAR archives (NEW in v2.1.0)
+  * Opt-in with --recursive flag (disabled by default for security)
+  * Automatically detects and unpacks RAR files within RAR files
+  * Transparent flat unpacking - nested files appear at same level as parent
+  * Configurable recursion depth (default: 5 levels, max: 10)
+  * Security protections: cycle detection, depth limits, size limits
+- Comic book RAR (.cbr) support
+- Password-protected archive support (via .pwd files)
+- FUSE3-based with fine-grained performance tuning
+- Thread-safe concurrent access
+- Production-ready with comprehensive security features
+
+
 BUILDING
 
 Standard build:
@@ -48,6 +66,63 @@ Example:
 Unmount:
 
     fusermount -u /mnt/rar
+
+
+RECURSIVE UNPACKING EXAMPLES
+
+rar2fs automatically detects and unpacks nested RAR archives (RAR files within
+RAR files), presenting all files at a single directory level for transparent access.
+
+Example 1: TV Show Release with Nested Subtitles
+
+    # Archive structure:
+    # TheWire.S01E01.rar contains:
+    #   - TheWire.S01E01.mkv (1.5GB video file)
+    #   - Subtitles.rar (contains english.srt, spanish.srt, french.srt)
+
+    # Mount with recursive unpacking enabled:
+    rar2fs --recursive /media/tv-shows /mnt/rar
+
+    # Access files transparently - no manual extraction needed:
+    ls /mnt/rar/
+    # Output:
+    #   TheWire.S01E01.mkv
+    #   english.srt         (from nested Subtitles.rar)
+    #   spanish.srt         (from nested Subtitles.rar)
+    #   french.srt          (from nested Subtitles.rar)
+
+    # Use subtitle file directly:
+    mplayer /mnt/rar/TheWire.S01E01.mkv -sub /mnt/rar/english.srt
+
+Example 2: Deep Nesting with Custom Depth Limit
+
+    # For deeply nested backup archives, enable recursive with custom depth:
+    rar2fs --recursive --recursion-depth=3 /backups /mnt/backups
+
+    # Archives nested beyond 3 levels will appear as regular RAR files
+    # (must be manually extracted if needed)
+
+Example 3: Security-Conscious Usage (Untrusted Archives)
+
+    # Mount without --recursive when working with untrusted sources:
+    rar2fs -d1 /downloads/untrusted.rar /mnt/rar
+
+    # Nested RAR files will appear as regular files (not automatically unpacked)
+    # Security events logged with -d1 (debug level 1)
+
+Configuration Options:
+
+  --recursive                   Enable recursive unpacking (default: disabled)
+  --recursion-depth=N           Maximum nesting levels to unpack (default: 5, range: 1-10)
+  --recursion-max-size=N        Max decompression size in GB (default: 10)
+
+Security features for nested archives:
+  - Cycle detection (prevents infinite A→B→A loops)
+  - Depth limits (prevents stack exhaustion)
+  - Size limits (prevents decompression bombs)
+  - Path sanitization (blocks directory traversal attacks)
+
+For complete details, see: man rar2fs
 
 
 ADVANCED FUSE CONFIGURATION
