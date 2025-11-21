@@ -16,6 +16,23 @@ If security is critical, consider using filesystem-level encryption (e.g., encfs
 in combination with rar2fs.
 
 
+FEATURES
+
+- Transparent read-only access to RAR archive contents
+- Support for both compressed (RAR) and uncompressed (store) archives
+- Multi-volume RAR archive support (.r00, .r01, etc.)
+- Recursive unpacking of nested RAR archives
+  * Opt-in with --recursive flag (disabled by default for security)
+  * Automatically detects and unpacks RAR files within RAR files
+  * Transparent flat unpacking - nested files appear at same level as parent
+  * Configurable recursion depth (default: 5 levels, max: 10)
+  * Security protections: cycle detection, depth limits, size limits
+- Password-protected archive support (via .pwd files)
+- FUSE3-based with fine-grained performance tuning
+- Thread-safe concurrent access
+- Production-ready with comprehensive security features
+
+
 BUILDING
 
 Standard build:
@@ -48,6 +65,100 @@ Example:
 Unmount:
 
     fusermount -u /mnt/rar
+
+
+RECURSIVE UNPACKING EXAMPLES
+
+rar2fs automatically detects and unpacks nested RAR archives (RAR files within
+RAR files), presenting all files at a single directory level for transparent access.
+
+Example 1: Video Archive with Nested Subtitles
+
+    # Archive structure:
+    # video-content.rar contains:
+    #   - video.mkv (1.5GB video file)
+    #   - subtitles.rar (contains english.srt, spanish.srt, french.srt)
+
+    # Mount with recursive unpacking enabled:
+    rar2fs --recursive /media/archives /mnt/rar
+
+    # Access files transparently - no manual extraction needed:
+    ls /mnt/rar/
+    # Output:
+    #   video.mkv
+    #   english.srt         (from nested subtitles.rar)
+    #   spanish.srt         (from nested subtitles.rar)
+    #   french.srt          (from nested subtitles.rar)
+
+    # Use subtitle file directly:
+    mplayer /mnt/rar/video.mkv -sub /mnt/rar/english.srt
+
+Example 2: Deep Nesting with Custom Depth Limit
+
+    # For deeply nested backup archives, enable recursive with custom depth:
+    rar2fs --recursive --recursion-depth=3 /backups /mnt/backups
+
+    # Archives nested beyond 3 levels will appear as regular RAR files
+    # (must be manually extracted if needed)
+
+Example 3: Security-Conscious Usage (Untrusted Archives)
+
+    # Mount without --recursive when working with untrusted sources:
+    rar2fs -d1 /downloads/untrusted.rar /mnt/rar
+
+    # Nested RAR files will appear as regular files (not automatically unpacked)
+    # Security events logged with -d1 (debug level 1)
+
+Configuration Options:
+
+  --recursive                   Enable recursive unpacking (default: disabled)
+  --recursion-depth=N           Maximum nesting levels to unpack (default: 5, range: 1-10)
+  --recursion-max-size=N        Max decompression size in GB (default: 10)
+
+Security features for nested archives:
+  - Cycle detection (prevents infinite A→B→A loops)
+  - Depth limits (prevents stack exhaustion)
+  - Size limits (prevents decompression bombs)
+  - Path sanitization (blocks directory traversal attacks)
+
+For complete details, see: man rar2fs
+
+
+ADVANCED FUSE CONFIGURATION
+
+rar2fs v3 supports fine-grained FUSE-level tuning for production optimization.
+
+Quick Start: Recommended Production Configuration
+
+For immutable RAR-compressed archives:
+
+    rar2fs \
+        --iob-size=8 --hist-size=75 \
+        --fuse-entry-timeout=3600 \
+        --fuse-attr-timeout=3600 \
+        /path/to/archives /mnt/rar2fs
+
+FUSE Option Categories:
+
+1. Cache Timeouts (--fuse-entry-timeout, --fuse-attr-timeout, --fuse-negative-timeout)
+   - Control how long metadata is cached
+   - Default: 600s (10 minutes) for immutable archives
+   - Recommendation: 3600s (1 hour) for maximum performance if archives never change
+
+2. Buffer Sizes (--fuse-max-write, --fuse-max-readahead)
+   - Control FUSE I/O buffer allocation
+   - Default: 1MB write, 512KB readahead
+   - Recommendation: Use defaults unless profiling shows bottlenecks
+
+3. Throughput Tuning (--fuse-max-background, --fuse-congestion-threshold)
+   - Control async I/O queue depth
+   - Default: Kernel defaults (~12 max background)
+   - Recommendation: Increase for high-concurrency workloads (e.g., 50-100)
+
+4. Capability Toggles (--fuse-no-async-read, etc.)
+   - Disable FUSE3 performance features for debugging
+   - Default: All capabilities enabled
+   - Recommendation: Never disable in production
 
 
 DOCUMENTATION

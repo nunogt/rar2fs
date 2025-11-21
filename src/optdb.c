@@ -54,7 +54,22 @@ static struct opt_entry opt_entry_[] = {
         {{NULL,}, 0, 0, 0, 0, 0},
         {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_OPERATION_TIMEOUT */
         {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_MAX_VOLUME_COUNT */
-        {{NULL,}, 0, 0, 0, 0, 1}   /* OPT_KEY_MAX_ARCHIVE_ENTRIES */
+        {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_MAX_ARCHIVE_ENTRIES */
+        /* FUSE mount options (FUSE tuning options) */
+        {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_FUSE_MAX_WRITE (integer) */
+        {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_FUSE_MAX_READAHEAD (integer) */
+        {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_FUSE_MAX_BACKGROUND (integer) */
+        {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_FUSE_CONGESTION_THRESHOLD (integer) */
+        {{NULL,}, 0, 0, 0, 0, 0},  /* OPT_KEY_FUSE_ENTRY_TIMEOUT (string for double) */
+        {{NULL,}, 0, 0, 0, 0, 0},  /* OPT_KEY_FUSE_NEGATIVE_TIMEOUT (string for double) */
+        {{NULL,}, 0, 0, 0, 0, 0},  /* OPT_KEY_FUSE_ATTR_TIMEOUT (string for double) */
+        {{NULL,}, 0, 0, 0, 0, 0},  /* OPT_KEY_FUSE_NO_ASYNC_READ (flag) */
+        {{NULL,}, 0, 0, 0, 0, 0},  /* OPT_KEY_FUSE_NO_SPLICE_READ (flag) */
+        {{NULL,}, 0, 0, 0, 0, 0},  /* OPT_KEY_FUSE_NO_PARALLEL_DIROPS (flag) */
+        /* Recursive unpacking: Recursive RAR unpacking options */
+        {{NULL,}, 0, 0, 0, 0, 0},  /* OPT_KEY_RECURSIVE (flag) */
+        {{NULL,}, 0, 0, 0, 0, 1},  /* OPT_KEY_RECURSION_DEPTH (integer) */
+        {{NULL,}, 0, 0, 0, 0, 1}   /* OPT_KEY_MAX_UNPACK_SIZE (integer) */
 };
 
 struct opt_entry *opt_entry_p  = &opt_entry_[0];
@@ -151,6 +166,12 @@ int optdb_save(int opt, const char *s)
         case OPT_KEY_SEEK_LENGTH:
         case OPT_KEY_HIST_SIZE:
         case OPT_KEY_BUF_SIZE:
+        case OPT_KEY_FUSE_MAX_WRITE:
+        case OPT_KEY_FUSE_MAX_READAHEAD:
+        case OPT_KEY_FUSE_MAX_BACKGROUND:
+        case OPT_KEY_FUSE_CONGESTION_THRESHOLD:
+        case OPT_KEY_RECURSION_DEPTH:       /*  integer 1-10 */
+        case OPT_KEY_MAX_UNPACK_SIZE:       /*  integer bytes */
         {
                 NO_UNUSED_RESULT strtoul(s1, &endptr, 10);
                 if (*endptr)
@@ -159,6 +180,17 @@ int optdb_save(int opt, const char *s)
                 ADD_OPT_(opt, s1, OPT_INT_);
                 break;
         }
+        case OPT_KEY_FUSE_ENTRY_TIMEOUT:
+        case OPT_KEY_FUSE_NEGATIVE_TIMEOUT:
+        case OPT_KEY_FUSE_ATTR_TIMEOUT:
+        case OPT_KEY_FUSE_NO_ASYNC_READ:
+        case OPT_KEY_FUSE_NO_SPLICE_READ:
+        case OPT_KEY_FUSE_NO_PARALLEL_DIROPS:
+        case OPT_KEY_RECURSIVE:              /*  flag */
+                /* Store as string for timeout doubles, or as flag for capabilities */
+                CLR_OPT_(opt);
+                ADD_OPT_(opt, s1, OPT_STR_);
+                break;
         case OPT_KEY_SRC:
         case OPT_KEY_DST:
                 CLR_OPT_(opt);

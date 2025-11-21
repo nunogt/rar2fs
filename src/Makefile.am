@@ -13,6 +13,7 @@ rar2fs_SOURCES = 	dllext.cpp \
 			dirlist.c \
 			rarconfig.c \
 			dirname.c \
+			recursion.c \
 			rar2fs.c \
 			common.h \
 			optdb.h \
@@ -25,6 +26,7 @@ rar2fs_SOURCES = 	dllext.cpp \
 			dircache.h \
 			rarconfig.h \
 			dirname.h \
+			recursion.h \
 			debug.h \
 			dllwrapper.h \
 			index.h \

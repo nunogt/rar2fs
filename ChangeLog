@@ -1,5 +1,40 @@
 rar2fs ChangeLog file.
 
+2025-11-16 FUSE3 Migration
+
+        * Release v3.0.0 (BREAKING CHANGE: FUSE3 required)
+
+        * Add 10 FUSE-level tuning options for production optimization (FUSE tuning options)
+          - Connection options: --fuse-max-write, --fuse-max-readahead,
+            --fuse-max-background, --fuse-congestion-threshold
+          - Timeout options: --fuse-entry-timeout, --fuse-attr-timeout,
+            --fuse-negative-timeout
+          - Capability toggles: --fuse-no-async-read, --fuse-no-splice-read,
+            --fuse-no-parallel-dirops
+          - Smart defaults: 600s entry/attr timeouts (optimized for immutable archives)
+          - Comprehensive validation: errno/endptr/isfinite/UINT32_MAX checks
+
+        * Migrate from FUSE2 to FUSE3 API (libfuse >= 3.2.0)
+
+        * Update all FUSE callback signatures for FUSE3 compatibility
+          - fuse_file_info: removed direct_io/keep_cache, added cache_readdir
+          - fuse_conn_info: new capability flags and congestion threshold
+          - Initialization: new fuse_config structure for mount options
+
+        * Implement FUSE3-specific optimizations
+          - readdir: cache_readdir support for directory listings
+          - read: ASYNC_READ and SPLICE_READ capabilities
+          - readdirplus: PARALLEL_DIROPS support
+
+        * Add lseek() support with SEEK_DATA/SEEK_HOLE for improved seeking
+
+        * Memory safety validated: AddressSanitizer clean (no leaks in rar2fs code)
+
+        * Thread safety confirmed: proper rwlock usage, no data races
+
+        * BACKWARD INCOMPATIBILITY: FUSE2 no longer supported
+          Users on older systems should continue using rar2fs v1.x
+
 2023-01-07 Hans Beckerus <hans.beckerus#AT#gmail.com>
 
         * Release v1.29.7

@@ -59,7 +59,9 @@ struct filecache_entry {
                         unsigned int vsize_fixup_needed:1;
                         unsigned int encrypted:1;
                         unsigned int vsize_resolved:1;
-                        unsigned int :21;
+                        unsigned int :19;                /*  Reduced from 21 to 19 */
+                        unsigned int detection_deferred:1; /*  Lazy RAR detection flag */
+                        unsigned int is_nested_rar:1;      /*  Is this a nested RAR archive? */
                         unsigned int unresolved:1;
                         unsigned int dry_run_done:1;
                         unsigned int check_atime:1;
@@ -73,7 +75,9 @@ struct filecache_entry {
                         unsigned int check_atime:1;
                         unsigned int dry_run_done:1;
                         unsigned int unresolved:1;
-                        unsigned int :21;
+                        unsigned int is_nested_rar:1;      /*  Is this a nested RAR archive? */
+                        unsigned int detection_deferred:1; /*  Lazy RAR detection flag */
+                        unsigned int :19;                /*  Reduced from 21 to 19 */
                         unsigned int vsize_resolved:1;
                         unsigned int encrypted:1;
                         unsigned int vsize_fixup_needed:1;
@@ -84,6 +88,14 @@ struct filecache_entry {
                 } flags;
                 uint32_t flags_uint32;
         };
+        /* Recursive unpacking: Nested archive metadata (+8 bytes per entry)
+         * These fields support recursive RAR unpacking with transparent flat design.
+         * All fields are NULL/0 for non-nested files (backward compatible).
+         */
+        uint8_t nested_depth;           /* 0 = top-level, 1-10 = nested level */
+        uint8_t hide_from_listing;      /* Hide nested RAR after unpacking (0=visible, 1=hidden) */
+        uint16_t _padding;              /* Alignment padding (reserved for future use) */
+        char *parent_rar_p;             /* Path to parent RAR (NULL = top-level) */
 };
 
 #define LOCAL_FS_ENTRY ((void*)-1)
