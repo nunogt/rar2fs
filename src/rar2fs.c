@@ -75,6 +75,7 @@
 #include "rarconfig.h"
 #include "common.h"
 #include "dirname.h"
+#include "recursion.h"
 
 #define MOUNT_FOLDER  0
 #define MOUNT_ARCHIVE 1
@@ -2984,7 +2985,7 @@ static struct filecache_entry *__listrar_tocache(char *file,
         }
 
         /* Allocate a cache entry for this file */
-        printd(3, "Adding %s to cache\n", file);
+        printd(3, "Adding %s to cache (from archive: %s)\n", file, arch);
         entry_p = filecache_alloc(file);
 
         entry_p->rar_p = strdup(first_arch);
@@ -3138,12 +3139,408 @@ static void __listrar_cachedirentry(const char *mp)
 
 /*!
  *****************************************************************************
+ * EP004 Phase 2B: Nested RAR Extraction Helper Functions
+ *****************************************************************************
+ */
+
+/* Forward declaration for recursive calls */
+static int listrar_internal(const char *path, struct dir_entry_list **buffer,
+                const char *arch, char **first_arch, int *final,
+                struct recursion_context *ctx);
+
+/**
+ * UCM_PROCESSDATA callback for extracting nested RAR to memory buffer.
+ * Called by UnRAR library with data chunks during extraction.
+ *
+ * @param msg Message type (UCM_PROCESSDATA expected)
+ * @param UserData Pointer to struct extract_buffer
+ * @param P1 Pointer to data chunk
+ * @param P2 Size of data chunk
+ * @return 1 to continue, -1 to abort
+ */
+static int CALLBACK extract_nested_callback(UINT msg, LPARAM UserData,
+                                             LPARAM P1, LPARAM P2)
+{
+        /* Log ALL callback invocations for debugging */
+        printd(2, "====> extract_nested_callback INVOKED: msg=%u, UserData=%p, P1=%ld, P2=%ld\n",
+               msg, (void *)UserData, (long)P1, (long)P2);
+
+        if (msg != UCM_PROCESSDATA) {
+                printd(3, "extract_nested_callback: ignoring non-data msg %u\n", msg);
+                return 1; /* Ignore other messages */
+        }
+
+        struct extract_buffer *buf = (struct extract_buffer *)UserData;
+        if (!buf || buf->error) {
+                printd(2, "extract_nested_callback: invalid buffer or error state\n");
+                return -1; /* Already in error state */
+        }
+
+        size_t chunk_size = (size_t)P2;
+        void *chunk_data = (void *)P1;
+
+        printd(4, "extract_nested_callback: received %zu bytes\n", chunk_size);
+
+        if (chunk_size == 0 || !chunk_data) {
+                printd(4, "extract_nested_callback: empty chunk\n");
+                return 1; /* Empty chunk, continue */
+        }
+
+        /* Check if we need to grow the buffer */
+        if (buf->size + chunk_size > buf->capacity) {
+                /* Double capacity (or set to chunk_size if larger) */
+                size_t new_capacity = buf->capacity * 2;
+                if (new_capacity < buf->size + chunk_size) {
+                        new_capacity = buf->size + chunk_size;
+                }
+
+                /* Limit to 1GB per file to prevent decompression bombs */
+                if (new_capacity > 1024ULL * 1024 * 1024) {
+                        printd(1, "extract_nested_callback: buffer too large "
+                                  "(%zu bytes)\n", new_capacity);
+                        buf->error = 1;
+                        return -1;
+                }
+
+                void *new_data = realloc(buf->data, new_capacity);
+                if (!new_data) {
+                        printd(1, "extract_nested_callback: realloc failed "
+                                  "for %zu bytes\n", new_capacity);
+                        buf->error = 1;
+                        return -1;
+                }
+
+                buf->data = new_data;
+                buf->capacity = new_capacity;
+                printd(4, "extract_nested_callback: grew buffer to %zu bytes\n",
+                       new_capacity);
+        }
+
+        /* Copy chunk to buffer */
+        memcpy((char *)buf->data + buf->size, chunk_data, chunk_size);
+        buf->size += chunk_size;
+
+        printd(4, "extract_nested_callback: copied %zu bytes (total=%zu)\n",
+               chunk_size, buf->size);
+
+        return 1; /* Continue extraction */
+}
+
+/**
+ * Extract nested RAR file to memory buffer.
+ * Uses UnRAR RARProcessFile with UCM_PROCESSDATA callback.
+ *
+ * FIX (EP004 Phase 2B.2): The issue was that we called RARSetCallback on an
+ * already-open archive handle. The handle was opened with list_callback_noswitch
+ * and RARSetCallback doesn't properly override this. Solution: Re-open the archive
+ * with the extraction callback set BEFORE opening.
+ *
+ * @param archive_path Path to parent archive file (NOT the handle!)
+ * @param filename Filename within archive to extract
+ * @param out_buffer Pointer to buffer struct (filled on success)
+ * @param out_mtime Pointer to store file modification time (optional)
+ * @return 0 on success, negative errno on error
+ */
+static int extract_nested_rar_to_memory_impl(const char *archive_path,
+                                              const char *filename,
+                                              struct extract_buffer *out_buffer,
+                                              time_t *out_mtime)
+{
+        if (!archive_path || !filename || !out_buffer) {
+                printd(1, "extract_nested_rar_to_memory: invalid arguments\n");
+                return -EINVAL;
+        }
+
+        /* Initialize buffer */
+        memset(out_buffer, 0, sizeof(*out_buffer));
+        out_buffer->capacity = 64 * 1024; /* Start with 64KB */
+        out_buffer->data = malloc(out_buffer->capacity);
+        if (!out_buffer->data) {
+                printd(1, "extract_nested_rar_to_memory: malloc failed\n");
+                return -ENOMEM;
+        }
+
+        /* Open archive with extraction callback set BEFORE opening */
+        RAROpenArchiveDataEx d;
+        memset(&d, 0, sizeof(RAROpenArchiveDataEx));
+        d.ArcName = (char *)archive_path;  /* Cast required by API */
+        d.OpenMode = RAR_OM_EXTRACT;
+        d.Callback = extract_nested_callback;
+        d.UserData = (LPARAM)out_buffer;
+
+        printd(2, "====> extract_nested_rar_to_memory: opening '%s' for extraction\n", archive_path);
+        printd(2, "====> Callback address: %p, UserData (buffer): %p\n",
+               (void *)extract_nested_callback, (void *)out_buffer);
+        printd(2, "====> Buffer initial state: data=%p, size=%zu, capacity=%zu, error=%d\n",
+               out_buffer->data, out_buffer->size, out_buffer->capacity, out_buffer->error);
+
+        HANDLE hdl = RAROpenArchiveEx(&d);
+        if (!hdl || d.OpenResult != ERAR_SUCCESS) {
+                printd(1, "extract_nested_rar_to_memory: RAROpenArchiveEx failed: %d\n",
+                       d.OpenResult);
+                free_extract_buffer(out_buffer);
+                return -EIO;
+        }
+
+        /* Search for the target file */
+        RARArchiveDataEx *arc = NULL;
+        int found = 0;
+        int dll_result = ERAR_SUCCESS;
+
+        printd(2, "====> Searching for '%s' in archive\n", filename);
+
+        while ((dll_result = RARListArchiveEx(hdl, &arc)) == ERAR_SUCCESS) {
+                if (strcmp(arc->hdr.FileName, filename) == 0) {
+                        printd(2, "====> Found target file '%s' (size=%lld)\n",
+                               filename, (long long)arc->hdr.UnpSize);
+                        found = 1;
+                        break;
+                }
+                /* Skip this file */
+                RARProcessFile(hdl, RAR_SKIP, NULL, NULL);
+        }
+
+        if (!found) {
+                printd(1, "extract_nested_rar_to_memory: file '%s' not found in archive\n",
+                       filename);
+                RARFreeArchiveDataEx(&arc);
+                RARCloseArchive(hdl);
+                free_extract_buffer(out_buffer);
+                return -ENOENT;
+        }
+
+        /* Extract file using RAR_TEST mode (extracts to callback, no disk write) */
+        printd(2, "====> extract_nested_rar_to_memory: extracting '%s' (RAR_TEST mode)\n", filename);
+        printd(2, "====> About to call RARProcessFile(handle=%p, RAR_TEST=%d, NULL, NULL)\n",
+               (void *)hdl, RAR_TEST);
+        int ret = RARProcessFile(hdl, RAR_TEST, NULL, NULL);
+        printd(2, "====> extract_nested_rar_to_memory: RARProcessFile returned %d (ERAR_SUCCESS=%d)\n",
+               ret, ERAR_SUCCESS);
+        printd(2, "====> Buffer after extraction: data=%p, size=%zu, capacity=%zu, error=%d\n",
+               out_buffer->data, out_buffer->size, out_buffer->capacity, out_buffer->error);
+
+        RARFreeArchiveDataEx(&arc);
+        RARCloseArchive(hdl);
+
+        if (ret != ERAR_SUCCESS && ret != ERAR_EOPEN) {
+                printd(1, "extract_nested_rar_to_memory: RARProcessFile failed: %d\n",
+                       ret);
+                free_extract_buffer(out_buffer);
+                return -EIO;
+        }
+
+        if (out_buffer->error) {
+                printd(1, "extract_nested_rar_to_memory: callback reported error\n");
+                free_extract_buffer(out_buffer);
+                return -EIO;
+        }
+
+        if (out_buffer->size == 0) {
+                printd(1, "extract_nested_rar_to_memory: no data extracted (callback not invoked?)\n");
+                free_extract_buffer(out_buffer);
+                return -EIO;
+        }
+
+        printd(2, "====> extract_nested_rar_to_memory: SUCCESS - extracted %zu bytes\n",
+               out_buffer->size);
+
+        /* Note: mtime extraction not implemented yet - would require
+         * passing RARArchiveDataEx through callback UserData */
+        if (out_mtime) {
+                *out_mtime = time(NULL);
+        }
+
+        return 0;
+}
+
+/**
+ * Process nested RAR file recursively.
+ * Extracts nested RAR to memory, writes to tmpfile, recursively calls listrar().
+ *
+ * @param parent_archive_path Path to parent RAR archive file
+ * @param nested_filename Filename of nested RAR within parent
+ * @param parent_path Virtual path to parent directory
+ * @param ctx Recursion context for security tracking
+ * @return 0 on success, negative errno on error
+ */
+/*!
+ *****************************************************************************
+ * Process a nested RAR file recursively
+ *
+ * This function extracts a nested RAR to a temporary file, recursively
+ * processes its contents via listrar_internal(), and returns the buffer
+ * containing entries from within the nested RAR.
+ *
+ * @param parent_archive_path   Path to the parent RAR archive
+ * @param nested_filename       Name of the nested RAR file within parent
+ * @param parent_path           Virtual path for the parent directory
+ * @param ctx                   Recursion context for depth/cycle tracking
+ * @return                      Buffer containing nested entries, or NULL on error
+ *
+ * The caller is responsible for merging the returned buffer into the parent
+ * buffer and freeing it after use.
+ ****************************************************************************/
+static struct dir_entry_list* process_nested_rar(const char *parent_archive_path,
+                               const char *nested_filename,
+                               const char *parent_path,
+                               struct recursion_context *ctx)
+{
+        int ret = 0;
+        struct extract_buffer buf = {0};
+        char tmpfile_path[PATH_MAX];
+        char *first_arch = NULL;
+        int final = 0;
+
+        printd(2, "process_nested_rar: processing %s at depth %d from archive %s\n",
+               nested_filename, ctx->depth, parent_archive_path);
+
+        /* Extract nested RAR to memory */
+        ret = extract_nested_rar_to_memory_impl(parent_archive_path, nested_filename,
+                                                 &buf, NULL);
+        printd(2, "process_nested_rar: extraction returned ret=%d, buffer.size=%zu\n",
+               ret, buf.size);
+        if (ret < 0) {
+                printd(2, "process_nested_rar: extraction failed: %d\n", ret);
+                return NULL;
+        }
+
+        /* Compute fingerprint for cycle detection */
+        struct archive_fingerprint fp = compute_archive_fingerprint(
+                buf.data, buf.size, time(NULL));
+
+        /* Check for cycles */
+        if (is_cycle_detected(ctx, &fp)) {
+                printd(1, "process_nested_rar: cycle detected for %s\n",
+                       nested_filename);
+                free_extract_buffer(&buf);
+                return NULL;
+        }
+
+        /* Check size limits */
+        ret = check_unpack_size_limit(ctx, buf.size);
+        if (ret < 0) {
+                printd(1, "process_nested_rar: size limit exceeded\n");
+                free_extract_buffer(&buf);
+                return NULL;
+        }
+
+        /* Write to tempfile for UnRAR processing */
+        ret = write_buffer_to_tempfile(&buf, tmpfile_path);
+        printd(2, "process_nested_rar: write_buffer_to_tempfile returned ret=%d, tmpfile=%s\n",
+               ret, tmpfile_path);
+        if (ret < 0) {
+                printd(1, "process_nested_rar: failed to write tempfile\n");
+                free_extract_buffer(&buf);
+                return NULL;
+        }
+
+        /* Check if tmpfile was actually created */
+        struct stat st;
+        if (stat(tmpfile_path, &st) == 0) {
+                printd(2, "process_nested_rar: tmpfile exists, size=%ld bytes\n", st.st_size);
+        } else {
+                printd(1, "process_nested_rar: WARNING - tmpfile does not exist!\n");
+        }
+
+        /* Free buffer - data now in tempfile */
+        free_extract_buffer(&buf);
+
+        /* Push archive onto recursion stack */
+        ret = recursion_push_archive(ctx, &fp, nested_filename);
+        if (ret < 0) {
+                printd(1, "process_nested_rar: recursion_push_archive failed: %d\n",
+                       ret);
+                unlink(tmpfile_path);
+                return NULL;
+        }
+
+        /* Recursively process nested RAR */
+        printd(3, "process_nested_rar: recursively listing %s\n", tmpfile_path);
+        printd(2, "process_nested_rar: calling listrar_internal with parent_path='%s', depth=%d\n",
+               parent_path, ctx->depth);
+        struct dir_entry_list *nested_buffer = NULL;
+        ret = listrar_internal(parent_path, &nested_buffer, tmpfile_path,
+                               &first_arch, &final, ctx);
+        printd(2, "process_nested_rar: listrar_internal returned ret=%d, nested_buffer=%p\n",
+               ret, (void*)nested_buffer);
+
+        /* Pop archive from stack */
+        recursion_pop_archive(ctx);
+
+        /* Clean up tempfile */
+        unlink(tmpfile_path);
+
+        if (first_arch) {
+                free(first_arch);
+        }
+
+        if (ret < 0) {
+                printd(2, "process_nested_rar: recursive listrar failed: %d\n", ret);
+                /* Free nested_buffer if allocated before error */
+                if (nested_buffer) {
+                        dir_list_free(nested_buffer);
+                        free(nested_buffer);
+                }
+                return NULL;
+        }
+
+        printd(2, "process_nested_rar: successfully processed %s, returning nested_buffer=%p\n",
+               nested_filename, (void*)nested_buffer);
+
+        /* Return the nested buffer to caller for merging */
+        return nested_buffer;
+}
+
+/*!
+ *****************************************************************************
  *
  ****************************************************************************/
 static int listrar(const char *path, struct dir_entry_list **buffer,
                 const char *arch, char **first_arch, int *final)
 {
+        /* EP004: Initialize recursion context for top-level calls when recursive mode enabled */
+        struct recursion_context local_ctx;
+        struct recursion_context *ctx = NULL;
+
+        if (OPT_SET(OPT_KEY_RECURSIVE)) {
+                recursion_context_init(&local_ctx);
+                ctx = &local_ctx;
+                printd(2, "listrar: recursion context enabled (max_depth=%d, max_size=%lld)\n",
+                       ctx->max_depth, (long long)ctx->max_unpacked_size);
+        }
+
+        int ret = listrar_internal(path, buffer, arch, first_arch, final, ctx);
+
+        if (ctx) {
+                recursion_context_cleanup(ctx);
+                printd(4, "listrar: cleaned up recursion context\n");
+        }
+
+        return ret;
+}
+
+/*!
+ *****************************************************************************
+ * Internal listrar with recursion context support (EP004 Phase 2B)
+ ****************************************************************************/
+static int listrar_internal(const char *path, struct dir_entry_list **buffer,
+                const char *arch, char **first_arch, int *final,
+                struct recursion_context *ctx)
+{
         ENTER_("%s   arch=%s", path, arch);
+
+        /* Initialize recursion context if this is top-level call */
+        struct recursion_context local_ctx;
+        bool ctx_owner = false;
+        if (!ctx && OPT_SET(OPT_KEY_RECURSIVE)) {
+                recursion_context_init(&local_ctx);
+                ctx = &local_ctx;
+                ctx_owner = true;
+                printd(2, "listrar_internal: recursion context enabled "
+                          "(max_depth=%d, max_size=%lld)\n",
+                       ctx->max_depth, (long long)ctx->max_unpacked_size);
+        }
+
         RAROpenArchiveDataEx d;
         memset(&d, 0, sizeof(RAROpenArchiveDataEx));
         d.ArcName = (char *)arch;   /* Horrible cast! But hey... it is the API! */
@@ -3191,15 +3588,36 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                 printd(1, "listrar: strdup failed for arch\n");
                 return -ENOMEM;
         }
-        char *rar_root = strdup(__gnu_dirname(tmp1));
-        if (!rar_root) {
-                printd(1, "listrar: strdup failed for rar_root\n");
+
+        /* EP004 Phase 2B.2: For tmpfiles (recursive extraction), use path directly
+         * as rar_root instead of computing from archive path. Tmpfiles are in /tmp
+         * and don't have meaningful directory structure relative to source. */
+        char *rar_root;
+        int is_tmpfile = (strncmp(arch, "/tmp/", 5) == 0);
+        if (is_tmpfile && ctx) {
+                /* Tmpfile from recursive extraction - use parent path as root */
+                rar_root = strdup(path);
+                if (!rar_root) {
+                        printd(1, "listrar: strdup failed for rar_root (tmpfile)\n");
+                        free(tmp1);
+                        return -ENOMEM;
+                }
                 free(tmp1);
-                return -ENOMEM;
+                tmp1 = rar_root;
+                printd(2, "listrar: tmpfile detected, using path '%s' as rar_root (depth=%d)\n",
+                       rar_root, ctx->depth);
+        } else {
+                /* Normal archive - compute rar_root from archive path */
+                rar_root = strdup(__gnu_dirname(tmp1));
+                if (!rar_root) {
+                        printd(1, "listrar: strdup failed for rar_root\n");
+                        free(tmp1);
+                        return -ENOMEM;
+                }
+                free(tmp1);
+                tmp1 = rar_root;
+                rar_root += strlen(OPT_STR2(OPT_KEY_SRC, 0));
         }
-        free(tmp1);
-        tmp1 = rar_root;
-        rar_root += strlen(OPT_STR2(OPT_KEY_SRC, 0));
         int is_root_path = (!strcmp(rar_root, path) || !CHRCMP(path, '/'));
         int ret = 0;
         RARArchiveDataEx *arc = NULL;
@@ -3251,6 +3669,24 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                 int display = 0;
 
                 DOS_TO_UNIX_PATH(arc->hdr.FileName);
+
+                /* EP004 Phase 3: Security - Sanitize nested archive paths */
+                if (ctx && ctx->depth > 0) {
+                        /* We're processing a nested archive - validate path security */
+                        char *sanitized = sanitize_nested_path(arc->hdr.FileName);
+                        if (!sanitized) {
+                                printd(1, "listrar: SECURITY - rejected malicious path: %s "
+                                          "(depth=%d)\n", arc->hdr.FileName, ctx->depth);
+                                /* Skip this entry - continue to next file */
+                                continue;
+                        }
+                        /* Path is safe - update arc->hdr.FileName in place */
+                        strncpy(arc->hdr.FileName, sanitized, sizeof(arc->hdr.FileName) - 1);
+                        arc->hdr.FileName[sizeof(arc->hdr.FileName) - 1] = '\0';
+                        free(sanitized);
+                        printd(3, "listrar: sanitized nested path OK: %s\n",
+                               arc->hdr.FileName);
+                }
 
                 pthread_rwlock_wrlock(&file_access_lock);
 
@@ -3374,19 +3810,60 @@ static int listrar(const char *path, struct dir_entry_list **buffer,
                 }
 
 cache_hit:
-                /* EP004 Phase 2: Check if this is a nested RAR file */
-                if (OPT_SET(OPT_KEY_RECURSIVE) && !IS_RAR_DIR(&arc->hdr)) {
+                /* EP004 Phase 2B: Process nested RAR files recursively */
+                if (ctx && !IS_RAR_DIR(&arc->hdr)) {
                         /* Check if file has .rar extension (fast-path) */
                         const char *ext = strrchr(arc->hdr.FileName, '.');
                         if (ext && !strcasecmp(ext, ".rar")) {
-                                /* Mark as nested RAR (will be processed recursively later) */
+                                /* Mark as nested RAR */
                                 entry_p->flags.is_nested_rar = 1;
-                                printd(3, "Detected nested RAR: %s (size=%lld)\n",
+                                printd(2, "====> Detected nested RAR: %s (size=%lld, depth=%d)\n",
                                        arc->hdr.FileName,
-                                       (long long)arc->hdr.UnpSize);
-                                /* Note: Actual recursive unpacking and hide_from_listing
-                                 * will be implemented in Phase 2 completion.
-                                 * For now, we detect and mark nested RARs. */
+                                       (long long)arc->hdr.UnpSize,
+                                       ctx->depth);
+
+                                /* Process recursively (extract and unpack contents) */
+                                printd(2, "====> Calling process_nested_rar for %s from archive %s\n",
+                                       arc->hdr.FileName, arch);
+                                struct dir_entry_list *nested_buffer = process_nested_rar(arch,
+                                                                     arc->hdr.FileName,
+                                                                     path, ctx);
+                                if (nested_buffer != NULL) {
+                                        /* Success - hide the nested RAR file */
+                                        entry_p->hide_from_listing = 1;
+                                        printd(2, "Successfully processed nested RAR: %s "
+                                                  "(hiding from listing)\n",
+                                               arc->hdr.FileName);
+
+                                        /* EP004 Phase 2B.3: Merge nested buffer into parent buffer */
+                                        if (buffer && *buffer && nested_buffer->next) {
+                                                printd(2, "====> Merging nested buffer into parent buffer\n");
+                                                struct dir_entry_list *merge_result =
+                                                        dir_list_append(*buffer, nested_buffer);
+                                                if (merge_result == NULL) {
+                                                        printd(1, "WARNING: dir_list_append failed for nested RAR %s\n",
+                                                               arc->hdr.FileName);
+                                                } else {
+                                                        printd(2, "====> Successfully merged nested entries "
+                                                                  "from %s\n", arc->hdr.FileName);
+                                                }
+                                        } else if (nested_buffer->next) {
+                                                printd(2, "====> Note: nested buffer has entries but parent "
+                                                          "buffer not available for merge\n");
+                                        } else {
+                                                printd(2, "====> Note: nested RAR %s contains no files\n",
+                                                       arc->hdr.FileName);
+                                        }
+
+                                        /* Free nested buffer after merge (entries were copied) */
+                                        dir_list_free(nested_buffer);
+                                        free(nested_buffer);
+                                } else {
+                                        /* Failed - log but continue (don't hide file) */
+                                        printd(2, "Failed to process nested RAR %s "
+                                                  "(keeping visible)\n",
+                                               arc->hdr.FileName);
+                                }
                         }
                 }
 
@@ -3402,6 +3879,12 @@ out:
         RARFreeArchiveDataEx(&arc);
         RARCloseArchive(hdl);
         free(tmp1);
+
+        /* Clean up recursion context if we own it */
+        if (ctx_owner) {
+                recursion_context_cleanup(ctx);
+                printd(4, "listrar_internal: cleaned up recursion context\n");
+        }
 
         return ret;
 }

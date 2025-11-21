@@ -35,6 +35,21 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <limits.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+/* UnRAR library types for callback */
+#ifndef UINT
+#define UINT unsigned int
+#endif
+#ifndef LPARAM
+#define LPARAM long
+#endif
+#ifndef CALLBACK
+#define CALLBACK
+#endif
+#define UCM_PROCESSDATA 1
 
 /* Forward declarations for internal helper functions */
 static uint64_t fnv1a_hash_64(const void *data, size_t len);
@@ -594,6 +609,166 @@ int check_unpack_size_limit(struct recursion_context *ctx, off_t archive_size)
                (long long)archive_size,
                (long long)ctx->total_unpacked_size,
                (long long)ctx->max_unpacked_size);
+
+        return 0;
+}
+
+/**
+ * UCM_PROCESSDATA callback for extracting RAR file to memory buffer.
+ * Called by UnRAR library with data chunks during extraction.
+ *
+ * @param msg Message type (UCM_PROCESSDATA expected)
+ * @param UserData Pointer to struct extract_buffer
+ * @param P1 Pointer to data chunk
+ * @param P2 Size of data chunk
+ * @return 1 to continue, -1 to abort
+ */
+static int CALLBACK extract_to_memory_callback(UINT msg, LPARAM UserData,
+                                               LPARAM P1, LPARAM P2)
+{
+        if (msg != UCM_PROCESSDATA) {
+                return 1; /* Ignore other messages */
+        }
+
+        struct extract_buffer *buf = (struct extract_buffer *)UserData;
+        if (!buf || buf->error) {
+                return -1; /* Already in error state */
+        }
+
+        size_t chunk_size = (size_t)P2;
+        void *chunk_data = (void *)P1;
+
+        if (chunk_size == 0 || !chunk_data) {
+                return 1; /* Empty chunk, continue */
+        }
+
+        /* Check if we need to grow the buffer */
+        if (buf->size + chunk_size > buf->capacity) {
+                /* Double capacity (or set to chunk_size if larger) */
+                size_t new_capacity = buf->capacity * 2;
+                if (new_capacity < buf->size + chunk_size) {
+                        new_capacity = buf->size + chunk_size;
+                }
+
+                /* Limit to 1GB to prevent decompression bombs */
+                if (new_capacity > 1024ULL * 1024 * 1024) {
+                        printd(1, "extract_to_memory_callback: buffer too large "
+                                  "(%zu bytes)\n", new_capacity);
+                        buf->error = 1;
+                        return -1;
+                }
+
+                void *new_data = realloc(buf->data, new_capacity);
+                if (!new_data) {
+                        printd(1, "extract_to_memory_callback: realloc failed "
+                                  "for %zu bytes\n", new_capacity);
+                        buf->error = 1;
+                        return -1;
+                }
+
+                buf->data = new_data;
+                buf->capacity = new_capacity;
+                printd(4, "extract_to_memory_callback: grew buffer to %zu bytes\n",
+                       new_capacity);
+        }
+
+        /* Copy chunk to buffer */
+        memcpy((char *)buf->data + buf->size, chunk_data, chunk_size);
+        buf->size += chunk_size;
+
+        printd(4, "extract_to_memory_callback: copied %zu bytes (total=%zu)\n",
+               chunk_size, buf->size);
+
+        return 1; /* Continue extraction */
+}
+
+/**
+ * Free extract buffer (if allocated).
+ *
+ * @param buffer Pointer to extract buffer
+ */
+void free_extract_buffer(struct extract_buffer *buffer)
+{
+        if (!buffer) {
+                return;
+        }
+
+        if (buffer->data) {
+                free(buffer->data);
+                buffer->data = NULL;
+        }
+
+        buffer->size = 0;
+        buffer->capacity = 0;
+        buffer->error = 0;
+}
+
+/**
+ * Extract nested RAR file to memory buffer.
+ * NOTE: This function requires UnRAR library types which are not
+ * included in recursion.h to avoid circular dependencies.
+ * Implementation will be completed in rar2fs.c where UnRAR types are available.
+ *
+ * This is a placeholder - actual implementation moved to rar2fs.c.
+ */
+int extract_nested_rar_to_memory(void *rar_handle,
+                                 const char *filename,
+                                 struct extract_buffer *out_buffer,
+                                 time_t *out_mtime)
+{
+        printd(1, "extract_nested_rar_to_memory: not implemented "
+                  "(moved to rar2fs.c)\n");
+        return -ENOSYS;
+}
+
+/**
+ * Write extracted buffer to temporary file for recursive processing.
+ * Creates a secure temporary file in /tmp.
+ *
+ * @param buffer Pointer to extract buffer
+ * @param out_path Buffer for temp file path (must be PATH_MAX size)
+ * @return 0 on success, negative errno on error
+ */
+int write_buffer_to_tempfile(struct extract_buffer *buffer, char *out_path)
+{
+        if (!buffer || !buffer->data || buffer->size == 0 || !out_path) {
+                printd(1, "write_buffer_to_tempfile: invalid arguments\n");
+                return -EINVAL;
+        }
+
+        /* Create unique temp file name */
+        snprintf(out_path, PATH_MAX, "/tmp/rar2fs_nested_XXXXXX");
+
+        /* Create secure temp file */
+        int fd = mkstemp(out_path);
+        if (fd < 0) {
+                printd(1, "write_buffer_to_tempfile: mkstemp failed: %s\n",
+                       strerror(errno));
+                return -errno;
+        }
+
+        /* Write all data */
+        ssize_t written = write(fd, buffer->data, buffer->size);
+        if (written != (ssize_t)buffer->size) {
+                printd(1, "write_buffer_to_tempfile: write failed "
+                          "(wrote %zd of %zu bytes)\n",
+                       written, buffer->size);
+                close(fd);
+                unlink(out_path);
+                return -EIO;
+        }
+
+        /* Sync to ensure data is on disk */
+        if (fsync(fd) < 0) {
+                printd(2, "write_buffer_to_tempfile: fsync failed: %s\n",
+                       strerror(errno));
+                /* Continue anyway - not critical */
+        }
+
+        close(fd);
+
+        printd(3, "write_buffer_to_tempfile: wrote %zu bytes to %s\n",
+               buffer->size, out_path);
 
         return 0;
 }

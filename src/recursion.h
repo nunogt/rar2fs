@@ -158,4 +158,47 @@ char *sanitize_nested_path(const char *path);
  */
 int check_unpack_size_limit(struct recursion_context *ctx, off_t archive_size);
 
+/**
+ * Memory buffer for extracting nested RAR to RAM.
+ * Used by extract_nested_rar_to_memory() function.
+ */
+struct extract_buffer {
+        void *data;              /* Extracted data buffer (malloc'd) */
+        size_t size;             /* Current data size */
+        size_t capacity;         /* Allocated buffer capacity */
+        int error;               /* Error flag (0=OK, 1=error) */
+};
+
+/**
+ * Extract nested RAR file to memory buffer.
+ * Uses UnRAR RARProcessFile with UCM_PROCESSDATA callback.
+ *
+ * @param rar_handle RAR archive handle
+ * @param filename Filename within archive to extract
+ * @param out_buffer Pointer to buffer struct (filled on success)
+ * @param out_mtime Pointer to store file modification time
+ * @return 0 on success, negative errno on error
+ */
+int extract_nested_rar_to_memory(void *rar_handle,
+                                 const char *filename,
+                                 struct extract_buffer *out_buffer,
+                                 time_t *out_mtime);
+
+/**
+ * Write extracted buffer to temporary file for recursive processing.
+ * Creates a secure temporary file in /tmp with random name.
+ *
+ * @param buffer Pointer to extract buffer
+ * @param out_path Buffer for temp file path (must be PATH_MAX size)
+ * @return 0 on success, negative errno on error
+ */
+int write_buffer_to_tempfile(struct extract_buffer *buffer, char *out_path);
+
+/**
+ * Free extract buffer (if allocated).
+ *
+ * @param buffer Pointer to extract buffer
+ */
+void free_extract_buffer(struct extract_buffer *buffer);
+
 #endif /* RECURSION_H_ */
