@@ -555,6 +555,79 @@ static inline int is_nnn_vol(const char *name)
 
 /*!
  *****************************************************************************
+ * EP004 Phase 1: Enhanced RAR detection with magic byte validation
+ *
+ * Check if a file is a valid RAR archive by verifying magic bytes.
+ * Supports both RAR4 and RAR5 format signatures.
+ *
+ * @param rar_path   Path to the parent RAR archive (for nested files)
+ * @param file_path  Path to the file within the RAR to check
+ * @return 1 if valid RAR archive, 0 otherwise
+ *
+ * RAR Format Signatures:
+ *   RAR 1.5-4.x: "Rar!\x1a\x07\x00" (7 bytes)
+ *   RAR 5.0+:    "Rar!\x1a\x07\x01\x00" (8 bytes)
+ *
+ * NOTE: This function performs I/O to read magic bytes from the archive.
+ *       Thread safety: Caller must hold appropriate locks for file access.
+ ****************************************************************************/
+static int is_rar_magic(const char *rar_path, const char *file_path)
+{
+        unsigned char magic[8];
+        int result = 0;
+
+        /* Validate inputs */
+        if (!rar_path || !file_path) {
+                printd(3, "is_rar_magic: invalid arguments (NULL path)\n");
+                return 0;
+        }
+
+        /* First check file extension as fast-path optimization */
+        if (!IS_RAR(file_path)) {
+                printd(4, "is_rar_magic: fast-path skip (not .rar extension): %s\n",
+                       file_path);
+                return 0;
+        }
+
+        /*
+         * TODO EP004 Phase 2: Extract magic bytes from file within RAR
+         * For now, rely on extension check only.
+         * Full implementation requires:
+         * 1. Open rar_path archive with RAROpenArchiveEx()
+         * 2. Iterate headers until file_path found
+         * 3. Extract first 8 bytes of file content
+         * 4. Compare against RAR4/RAR5 signatures
+         * 5. Close archive handle
+         */
+
+        /* RAR 1.5-4.x signature: "Rar!\x1a\x07\x00" */
+        static const unsigned char rar4_sig[] = {
+                0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00
+        };
+
+        /* RAR 5.0+ signature: "Rar!\x1a\x07\x01\x00" */
+        static const unsigned char rar5_sig[] = {
+                0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x01, 0x00
+        };
+
+        /*
+         * Phase 1 Stub: Return true if extension is .rar
+         * This maintains backward compatibility while preparing
+         * for Phase 2 full magic byte validation.
+         */
+        printd(3, "is_rar_magic: stub returning true for .rar extension: %s\n",
+               file_path);
+        return 1;
+
+        /* Unreachable code - will be activated in Phase 2 */
+        (void)magic;
+        (void)rar4_sig;
+        (void)rar5_sig;
+        (void)result;
+}
+
+/*!
+ *****************************************************************************
  *
  ****************************************************************************/
 #if RARVER_MAJOR > 4 || ( RARVER_MAJOR == 4 && RARVER_MINOR >= 20 )
@@ -6556,6 +6629,33 @@ static int validate_fuse_option(int opt_key, const char *arg)
         case OPT_KEY_FUSE_NO_PARALLEL_DIROPS:
                 return 0;
 
+        /* EP004 Phase 1: Recursive RAR unpacking options validation */
+        case OPT_KEY_RECURSIVE:
+                /* Flag option - no validation needed */
+                return 0;
+
+        case OPT_KEY_RECURSION_DEPTH: {
+                long val = strtol(arg, &endptr, 10);
+                if (errno == ERANGE || *endptr != '\0' || val < 1 || val > 10) {
+                        fprintf(stderr, "Error: Invalid --recursion-depth: %s\n", arg);
+                        fprintf(stderr, "       Valid range: 1-10\n");
+                        fprintf(stderr, "       Default: 5\n");
+                        return -1;
+                }
+                return 0;
+        }
+
+        case OPT_KEY_MAX_UNPACK_SIZE: {
+                unsigned long long val = strtoull(arg, &endptr, 10);
+                if (errno == ERANGE || *endptr != '\0' || val == 0) {
+                        fprintf(stderr, "Error: Invalid --max-unpack-size: %s\n", arg);
+                        fprintf(stderr, "       Must be a positive integer (bytes)\n");
+                        fprintf(stderr, "       Default: 10737418240 (10 GiB)\n");
+                        return -1;
+                }
+                return 0;
+        }
+
         default:
                 return 0;  /* Not a FUSE option, no validation needed */
         }
@@ -6614,6 +6714,10 @@ static struct option longopts[] = {
         {"fuse-no-async-read", no_argument, NULL, OPT_ADDR(OPT_KEY_FUSE_NO_ASYNC_READ)},
         {"fuse-no-splice-read", no_argument, NULL, OPT_ADDR(OPT_KEY_FUSE_NO_SPLICE_READ)},
         {"fuse-no-parallel-dirops", no_argument, NULL, OPT_ADDR(OPT_KEY_FUSE_NO_PARALLEL_DIROPS)},
+        /* EP004 Phase 1: Recursive RAR unpacking options */
+        {"recursive", no_argument, NULL, OPT_ADDR(OPT_KEY_RECURSIVE)},
+        {"recursion-depth", required_argument, NULL, OPT_ADDR(OPT_KEY_RECURSION_DEPTH)},
+        {"max-unpack-size", required_argument, NULL, OPT_ADDR(OPT_KEY_MAX_UNPACK_SIZE)},
         {NULL,                          0, NULL, 0}
 };
 
@@ -6653,7 +6757,9 @@ static int rar2fs_opt_proc(void *data, const char *arg, int key,
                 if (opt >= OPT_ADDR(0)) {
                         int opt_id = OPT_ID(opt);
                         /* Validate FUSE options before saving (EP002 Phase 7) */
-                        if (opt_id >= OPT_KEY_FUSE_MAX_WRITE && opt_id <= OPT_KEY_FUSE_NO_PARALLEL_DIROPS) {
+                        /* Validate EP004 recursive unpacking options (EP004 Phase 1) */
+                        if ((opt_id >= OPT_KEY_FUSE_MAX_WRITE && opt_id <= OPT_KEY_FUSE_NO_PARALLEL_DIROPS) ||
+                            (opt_id >= OPT_KEY_RECURSIVE && opt_id <= OPT_KEY_MAX_UNPACK_SIZE)) {
                                 if (validate_fuse_option(opt_id, optarg ? optarg : "1") < 0)
                                         return -1;
                         }

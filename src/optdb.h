@@ -66,6 +66,10 @@ enum {
         OPT_KEY_FUSE_NO_ASYNC_READ,         /* Disable FUSE_CAP_ASYNC_READ */
         OPT_KEY_FUSE_NO_SPLICE_READ,        /* Disable FUSE_CAP_SPLICE_READ */
         OPT_KEY_FUSE_NO_PARALLEL_DIROPS,    /* Disable FUSE_CAP_PARALLEL_DIROPS */
+        /* EP004 Phase 1: Recursive RAR unpacking options */
+        OPT_KEY_RECURSIVE,                  /* Enable recursive RAR unpacking (flag) */
+        OPT_KEY_RECURSION_DEPTH,            /* Maximum recursion depth (integer 1-10) */
+        OPT_KEY_MAX_UNPACK_SIZE,            /* Maximum uncompressed size for nested archives (integer bytes) */
         OPT_KEY_END, /* Must *always* be last key */
         OPT_KEY_LAST = (OPT_KEY_END - 1)
 };
