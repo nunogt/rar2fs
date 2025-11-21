@@ -243,6 +243,268 @@ set maximum number of archive entries to process (default: 10000)
 Limits the number of file entries that will be processed when reading RAR archives.
 This prevents resource exhaustion from archives claiming billions of files.
 The default limit of 10000 entries should be sufficient for most legitimate archives.
+.RE
+.TP
+.B \-\-recursive
+enable recursive unpacking of nested RAR archives (default: disabled)
+.PP
+.RS
+When enabled,
+.B rar2fs
+will automatically detect and transparently unpack RAR archives contained within other
+RAR archives. This allows seamless access to deeply nested archive structures without
+manual extraction. Nested files are presented at the same directory level as their
+parent archive (transparent flat unpacking), simplifying navigation.
+.PP
+Without this flag, nested RAR files appear as regular files and must be manually
+extracted. Enable this option only for trusted archives, as recursive unpacking
+increases resource usage and attack surface.
+.RE
+.TP
+.B \-\-recursion-depth=n
+set maximum recursion depth for nested archives (default: 5, range: 1-10)
+.PP
+.RS
+Limits how many levels of nested RAR archives will be unpacked. For example, with
+a depth of 3, an archive structure like A.rar → B.rar → C.rar → D.rar will only
+unpack through C.rar; D.rar will appear as a regular file.
+.PP
+The default depth of 5 levels handles most legitimate nested archive scenarios while
+providing protection against recursion bombs. Lower values (1-3) improve performance
+and reduce resource consumption. Higher values (6-10) may be needed for deeply nested
+backup or archival structures but increase security risk.
+.PP
+This option has no effect when
+.B \-\-recursive=no
+is specified.
+.RE
+.TP
+.B \-\-recursion-max-size=n
+set maximum total decompression size in gigabytes (default: 10)
+.PP
+.RS
+Limits the total amount of data that will be decompressed from nested RAR archives
+during recursive unpacking. This prevents decompression bombs (maliciously crafted
+archives that expand to consume all available disk space).
+.PP
+When this limit is exceeded during nested extraction,
+.B rar2fs
+will stop unpacking further nested archives and log a security event. Already-unpacked
+data remains accessible. The default limit of 10GB is conservative and should be
+sufficient for most media collections. Increase only when working with large,
+trusted nested archive sets.
+.PP
+This option has no effect when
+.B \-\-recursive=no
+is specified.
+.RE
+.br
+.SH FUSE TUNING OPTIONS
+The following options control FUSE-level performance parameters (FUSE tuning options).
+These are advanced options; the defaults are optimized for immutable RAR archives.
+.TP
+.B \-\-fuse-max-write=BYTES
+Set FUSE maximum write buffer size. Default: 1048576 (1MB).
+Valid range: 4096-4194304 (4KB-4MB). Higher values improve
+large file write performance but increase kernel memory usage.
+.TP
+.B \-\-fuse-max-readahead=BYTES
+Set FUSE maximum readahead size. Default: 524288 (512KB).
+Valid range: 0-2097152 (0-2MB). Higher values improve sequential
+read performance for cached workloads. Set to 0 to disable.
+.TP
+.B \-\-fuse-entry-timeout=SECONDS
+Directory entry cache timeout. Default: 600.0 (10 minutes).
+Valid range: 0.0-3600.0. Since RAR archives are typically
+immutable, high values (600-3600) are recommended for
+production use. Use low values (0-60) if archives may be
+replaced during mount.
+.TP
+.B \-\-fuse-attr-timeout=SECONDS
+File attribute cache timeout. Default: 600.0 (10 minutes).
+Valid range: 0.0-3600.0. Recommendations same as entry-timeout.
+.TP
+.B \-\-fuse-negative-timeout=SECONDS
+Negative lookup cache timeout. Default: 60.0 (1 minute).
+Valid range: 0.0-3600.0. Caches "file not found" results.
+.TP
+.B \-\-fuse-max-background=COUNT
+Maximum pending background requests. Valid range: 1-100.
+Default: kernel default (~12). Higher values may improve
+async I/O throughput but consume more kernel memory.
+.TP
+.B \-\-fuse-congestion-threshold=COUNT
+Kernel congestion threshold. Valid range: 1-100.
+Default: kernel default (~9). Affects scheduler behavior
+under high load.
+.PP
+.RS
+.B FUSE Capability Toggles (Debugging):
+The following flags disable FUSE3 performance capabilities.
+These are debugging/compatibility options; all capabilities
+are enabled by default.
+.TP
+.B \-\-fuse-no-async-read
+Disable asynchronous read capability. May reduce performance.
+.TP
+.B \-\-fuse-no-splice-read
+Disable splice read (zero-copy) capability. May reduce performance.
+.TP
+.B \-\-fuse-no-parallel-dirops
+Disable parallel directory operations. May reduce concurrency.
+.RE
+.PP
+.RS
+.B Examples:
+.PP
+Optimal configuration for immutable video archives on virtiofs:
+.PP
+.nf
+rar2fs --iob-size=8 --hist-size=75 \\
+       --fuse-entry-timeout=3600 --fuse-attr-timeout=3600 \\
+       /mnt/host/media /mnt/rar2fs
+.fi
+.PP
+Expected benefits: +24% directory operations, +10-20% metadata
+operations, +7-13% video seeking (vs default configuration).
+.PP
+Conservative configuration for dynamic scenarios (archives may be replaced):
+.PP
+.nf
+rar2fs --fuse-entry-timeout=0 --fuse-attr-timeout=0 \\
+       /source /mount
+.fi
+.PP
+.B Recursive Unpacking Examples:
+.PP
+Basic usage with nested RAR archives:
+.PP
+.nf
+rar2fs --recursive /path/to/archives /mnt/rar
+ls /mnt/rar/
+# Shows all files from nested RARs at same level as parent files
+.fi
+.PP
+Example: Video archive with nested subtitles:
+.PP
+.nf
+# Archive structure: video-content.rar contains:
+#   - video.mkv
+#   - subtitles.rar (contains english.srt, spanish.srt)
+#
+# Mount with recursive unpacking enabled:
+rar2fs --recursive /media/archives /mnt/rar
+cat /mnt/rar/english.srt
+# Transparent access - no manual extraction needed
+.fi
+.PP
+Advanced: Deep nesting with custom depth limit:
+.PP
+.nf
+# Enable recursive unpacking with custom depth limit (3 levels)
+rar2fs --recursive --recursion-depth=3 /archives /mnt/rar
+.fi
+.PP
+Security: Mount untrusted archives without recursive unpacking:
+.PP
+.nf
+# Mount untrusted archive without --recursive flag (safer)
+rar2fs -d1 /downloads/untrusted.rar /mnt/rar
+# Nested RARs appear as regular files, must be manually extracted
+.fi
+.PP
+.B Tuning Guide:
+.PP
+For immutable RAR archives (typical use case):
+.br
+1. Use high FUSE cache timeouts (600-3600s) to minimize
+metadata lookups. RAR archives don't change, so aggressive
+caching is safe.
+.br
+2. Use optimized I/O buffers (--iob-size=8 --hist-size=75)
+for best throughput.
+.br
+3. Use default FUSE buffer sizes (1MB write, 512KB readahead)
+unless profiling shows specific bottlenecks.
+.PP
+Memory impact calculation:
+.br
+max_write × max_background = kernel memory consumption
+.br
+Example: 1MB × 12 = 12MB (default, safe)
+.br
+Example: 4MB × 100 = 400MB (high throughput, risky)
+.RE
+.br
+.SH SECURITY CONSIDERATIONS
+.PP
+.B rar2fs
+implements multiple security mechanisms to protect against malicious or malformed
+archives, especially when recursive unpacking is enabled:
+.TP
+.B Cycle Detection
+Prevents infinite recursion loops where archive A contains archive B which contains
+archive A. Each archive is fingerprinted using FNV-1a hashing during extraction.
+If a cycle is detected (same archive encountered twice in the recursion chain),
+processing stops immediately and a security event is logged at debug level 1-2.
+.TP
+.B Depth Limits
+Enforces maximum recursion depth (configurable via
+.B \-\-recursion-depth
+, default: 5 levels) to prevent stack exhaustion from deeply nested archive structures.
+Archives beyond the depth limit appear as regular files. This protects against recursion
+bombs designed to consume system resources through excessive nesting. Security events
+are logged when depth limits are reached.
+.TP
+.B Size Limits
+Enforces maximum total decompression size (configurable via
+.B \-\-recursion-max-size
+, default: 10GB) to prevent decompression bombs that expand to fill available disk space.
+When the cumulative size of unpacked nested archives exceeds this limit, further unpacking
+stops but already-extracted data remains accessible. Security events are logged at debug
+level 1-2.
+.TP
+.B Path Sanitization
+All file paths from nested archives are sanitized to prevent directory traversal attacks.
+Absolute paths (e.g., /etc/passwd) and parent directory references (e.g., ../../../etc/passwd)
+are stripped. Windows-style drive letters (e.g., C:\\Windows\\System32) are also removed.
+Only the base filename is retained for security. Path sanitization events are logged at
+debug level 2.
+.TP
+.B Security Event Logging
+All security-relevant events (cycle detection, depth limit exceeded, size limit exceeded,
+path sanitization) are logged when debug level is set to 1 or 2 via the
+.B \-d
+option. Use
+.B \-d1
+or
+.B \-d2
+when mounting untrusted archives to monitor security events.
+.PP
+.B Recommendations for Untrusted Archives:
+.PP
+When mounting RAR archives from untrusted sources, consider these precautions:
+.PP
+1. Do not enable recursive unpacking (omit
+.B \-\-recursive
+flag)
+.br
+2. Enable security logging:
+.B \-d1
+or
+.B \-d2
+.br
+3. Use conservative depth limits:
+.B \-\-recursion-depth=2
+.br
+4. Reduce size limits:
+.B \-\-recursion-max-size=1
+(1GB)
+.br
+5. Run in a sandboxed environment (container, VM, restricted user account)
+.PP
+For trusted archives (personal backups, verified media collections), the default settings
+provide a good balance between functionality and security.
 .br
 .SH MOUNT OPTIONS
 .RE
